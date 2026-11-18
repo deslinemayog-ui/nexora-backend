@@ -1,0 +1,72 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: nexora-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-nexora}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nexora_secret_password}
+      POSTGRES_DB: ${POSTGRES_DB:-nexora_ai}
+    ports:
+      - '5432:5432'
+    volumes:
+      - nexora_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-nexora} -d ${POSTGRES_DB:-nexora_ai}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: nexora-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - '6379:6379'
+    volumes:
+      - nexora_redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  nexora-api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: nexora-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      HOST: 0.0.0.0
+      DATABASE_URL: postgresql://${POSTGRES_USER:-nexora}:${POSTGRES_PASSWORD:-nexora_secret_password}@postgres:5432/${POSTGRES_DB:-nexora_ai}?schema=public
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      # Connect to host or external OpenClaw Gateway (default port 18789)
+      OPENCLAW_GATEWAY_WS_URL: ${OPENCLAW_GATEWAY_WS_URL:-ws://host.docker.internal:18789}
+      OPENCLAW_GATEWAY_HTTP_URL: ${OPENCLAW_GATEWAY_HTTP_URL:-http://host.docker.internal:18789}
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    ports:
+      - '3000:3000'
+    volumes:
+      - nexora_whatsapp_auth:/app/storage/whatsapp-auth
+      - nexora_documents:/app/storage/documents
+
+volumes:
+  nexora_pg_data:
+  nexora_redis_data:
+  nexora_whatsapp_auth:
+  nexora_documents:

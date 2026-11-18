@@ -1,0 +1,475 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum AccountStatus {
+  ACTIVE
+  SUSPENDED
+  PENDING_VERIFICATION
+  DEACTIVATED
+}
+
+enum SubscriptionTier {
+  FREE
+  STARTER
+  PROFESSIONAL
+  ENTERPRISE
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+  TRIALING
+}
+
+enum ConversationStatus {
+  ACTIVE
+  ARCHIVED
+  CLOSED
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  AUDIO
+  VOICE_NOTE
+  PDF
+  DOCUMENT
+  SYSTEM
+}
+
+enum DeliveryStatus {
+  RECEIVED
+  QUEUED
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
+enum ProjectStatus {
+  PENDING
+  PLANNING
+  IN_PROGRESS
+  WAITING_FOR_CUSTOMER
+  AWAITING_APPROVAL
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum TaskStatus {
+  PENDING
+  PLANNING
+  IN_PROGRESS
+  WAITING_FOR_CUSTOMER
+  AWAITING_APPROVAL
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum AgentType {
+  JOB_AGENT
+  VISA_AGENT
+  INVESTOR_AGENT
+  BUSINESS_AGENT
+  EDUCATION_AGENT
+  RESEARCH_AGENT
+}
+
+enum ExecutionStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  TIMEOUT
+  CANCELLED
+}
+
+enum DocumentType {
+  CV
+  PASSPORT
+  CERTIFICATE
+  BUSINESS_PLAN
+  COMPANY_REGISTRATION
+  IMAGE
+  PDF
+  VOICE_NOTE
+  AUDIO
+  OTHER
+}
+
+enum ScanStatus {
+  PENDING
+  CLEAN
+  INFECTED
+  FAILED
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXPIRED
+  EXECUTED
+}
+
+enum ActionCategory {
+  SEND_EMAIL
+  SUBMIT_JOB_APPLICATION
+  CONTACT_INVESTOR
+  SHARE_PERSONAL_DOCUMENT
+  BOOK_APPOINTMENT
+  MAKE_PAYMENT
+  SUBMIT_OFFICIAL_FORM
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+  SUPPRESSED
+}
+
+model Customer {
+  id                  String           @id @default(uuid())
+  whatsappNumber      String           @unique
+  whatsappJid         String           @unique
+  displayName         String?
+  preferredLanguage   String           @default("en")
+  accountStatus       AccountStatus    @default(ACTIVE)
+  consentGiven        Boolean          @default(false)
+  consentTimestamp    DateTime?
+  consentVersion      String?
+  creditBalanceCents  Int              @default(500)
+  executionPermissions Json            @default("{\"autoResearch\":true,\"autoDraft\":true,\"requireApprovalForExternal\":true}")
+  lastActivityAt      DateTime         @default(now())
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+
+  profile             CustomerProfile?
+  subscription        Subscription?
+  conversations       Conversation[]
+  messages            Message[]
+  projects            Project[]
+  tasks               Task[]
+  agentExecutions     AgentExecution[]
+  documents           Document[]
+  approvals           Approval[]
+  auditLogs           AuditLog[]
+  notifications       Notification[]
+  memories            CustomerMemory[]
+
+  @@index([whatsappNumber])
+  @@index([accountStatus])
+  @@index([lastActivityAt])
+}
+
+model CustomerProfile {
+  id                  String   @id @default(uuid())
+  customerId          String   @unique
+  fullName            String?
+  email               String?
+  countryOfResidence  String?
+  nationality         String?
+  targetCountries     String[] @default([])
+  currentOccupation   String?
+  yearsOfExperience   Int?
+  educationSummary    Json?
+  skills              String[] @default([])
+  workExperience      Json?
+  businessDetails     Json?
+  preferences         Json     @default("{}")
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  customer            Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId])
+}
+
+model Subscription {
+  id                  String             @id @default(uuid())
+  customerId          String             @unique
+  tier                SubscriptionTier   @default(FREE)
+  status              SubscriptionStatus @default(ACTIVE)
+  monthlyTaskQuota    Int                @default(25)
+  tasksUsedThisPeriod Int                @default(0)
+  currentPeriodStart  DateTime           @default(now())
+  currentPeriodEnd    DateTime
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  customer            Customer           @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId, status])
+}
+
+model Conversation {
+  id                  String             @id @default(uuid())
+  customerId          String
+  openclawSessionKey  String             @unique
+  status              ConversationStatus @default(ACTIVE)
+  activeProjectId     String?
+  summary             String?
+  lastMessageAt       DateTime           @default(now())
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  customer            Customer           @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  messages            Message[]
+
+  @@index([customerId, status])
+  @@index([lastMessageAt])
+}
+
+model Message {
+  id                  String           @id @default(uuid())
+  customerId          String
+  conversationId      String
+  externalMessageId   String?          @unique
+  direction           MessageDirection
+  messageType         MessageType      @default(TEXT)
+  content             String
+  mediaDocumentId     String?
+  deliveryStatus      DeliveryStatus   @default(RECEIVED)
+  detectedIntent      String?
+  routedAgentType     AgentType?
+  projectId           String?
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+
+  customer            Customer         @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  conversation        Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  project             Project?         @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@index([customerId, conversationId, createdAt])
+  @@index([externalMessageId])
+}
+
+model Project {
+  id                     String        @id @default(uuid())
+  customerId             String
+  title                  String
+  objective              String
+  description            String
+  assignedSpecialist     AgentType
+  status                 ProjectStatus @default(PENDING)
+  priority               Priority      @default(MEDIUM)
+  expectedCompletionDate DateTime?
+  executionHistory       Json          @default("[]")
+  finalResults           Json?
+  createdAt              DateTime      @default(now())
+  updatedAt              DateTime      @updatedAt
+
+  customer               Customer      @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  tasks                  Task[]
+  documents              Document[]
+  approvals              Approval[]
+  messages               Message[]
+  agentExecutions        AgentExecution[]
+  notifications          Notification[]
+
+  @@index([customerId, status])
+  @@index([customerId, updatedAt])
+}
+
+model Task {
+  id                  String           @id @default(uuid())
+  customerId          String
+  projectId           String
+  stepOrder           Int              @default(1)
+  title               String
+  description         String
+  assignedSpecialist  AgentType
+  status              TaskStatus       @default(PENDING)
+  priority            Priority         @default(MEDIUM)
+  requiresApproval    Boolean          @default(false)
+  actionCategory      ActionCategory?
+  inputPayload        Json?
+  resultPayload       Json?
+  errorMessage        String?
+  retryCount          Int              @default(0)
+  startedAt           DateTime?
+  completedAt         DateTime?
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+
+  customer            Customer         @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  project             Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  approvals           Approval[]
+  agentExecutions     AgentExecution[]
+
+  @@index([customerId, projectId, stepOrder])
+  @@index([customerId, status])
+}
+
+model Agent {
+  id                     String           @id @default(uuid())
+  agentType              AgentType        @unique
+  taskKey                String           @default("employment")
+  name                   String
+  description            String
+  openclawAgentId        String
+  allowedTools           String[]         @default([])
+  restrictedActions      String[]         @default([])
+  costPerSubmissionCents Int              @default(100)
+  sortOrder              Int              @default(0)
+  isActive               Boolean          @default(true)
+  createdAt              DateTime         @default(now())
+  updatedAt              DateTime         @updatedAt
+
+  executions             AgentExecution[]
+}
+
+model AgentExecution {
+  id                  String          @id @default(uuid())
+  customerId          String
+  agentId             String?
+  agentType           AgentType
+  projectId           String?
+  taskId              String?
+  openclawSessionKey  String
+  openclawRunId       String?
+  status              ExecutionStatus @default(QUEUED)
+  promptSummary       String
+  responseSummary     String?
+  tokensUsed          Int             @default(0)
+  toolCallsCount      Int             @default(0)
+  durationMs          Int?
+  errorMessage        String?
+  startedAt           DateTime        @default(now())
+  endedAt             DateTime?
+  createdAt           DateTime        @default(now())
+
+  customer            Customer        @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  agent               Agent?          @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  project             Project?        @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  task                Task?           @relation(fields: [taskId], references: [id], onDelete: SetNull)
+
+  @@index([customerId, createdAt])
+  @@index([openclawRunId])
+  @@index([projectId, taskId])
+}
+
+model Document {
+  id                  String       @id @default(uuid())
+  customerId          String
+  projectId           String?
+  documentType        DocumentType
+  originalFileName    String
+  mimeType            String
+  fileSizeBytes       Int
+  storageKey          String       @unique
+  encryptionIv        String
+  encryptionAuthTag   String
+  checksumSha256      String
+  scanStatus          ScanStatus   @default(PENDING)
+  extractedText       String?
+  structuredMetadata  Json?
+  isSensitive         Boolean      @default(true)
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+
+  customer            Customer     @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  project             Project?     @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@index([customerId, documentType])
+  @@index([customerId, projectId])
+}
+
+model Approval {
+  id                  String         @id @default(uuid())
+  customerId          String
+  projectId           String?
+  taskId              String?
+  actionCategory      ActionCategory
+  title               String
+  description         String
+  actionPayload       Json
+  status              ApprovalStatus @default(PENDING)
+  requestedAt         DateTime       @default(now())
+  respondedAt         DateTime?
+  customerResponseRaw String?
+  executedAt          DateTime?
+  executionResult     Json?
+  expiresAt           DateTime
+
+  customer            Customer       @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  project             Project?       @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  task                Task?          @relation(fields: [taskId], references: [id], onDelete: SetNull)
+
+  @@index([customerId, status])
+  @@index([projectId, taskId])
+}
+
+model AuditLog {
+  id                  String   @id @default(uuid())
+  customerId          String?
+  actorType           String
+  actorId             String
+  action              String
+  resourceType        String
+  resourceId          String?
+  details             Json
+  ipAddress           String?
+  createdAt           DateTime @default(now())
+
+  customer            Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  @@index([customerId, createdAt])
+  @@index([action, createdAt])
+}
+
+model Notification {
+  id                  String             @id @default(uuid())
+  customerId          String
+  projectId           String?
+  title               String
+  message             String
+  status              NotificationStatus @default(PENDING)
+  sentAt              DateTime?
+  errorMessage        String?
+  createdAt           DateTime           @default(now())
+
+  customer            Customer           @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  project             Project?           @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@index([customerId, status])
+}
+
+model CustomerMemory {
+  id                  String   @id @default(uuid())
+  customerId          String
+  category            String
+  key                 String
+  value               String
+  confidence          Float    @default(1.0)
+  sourceMessageId     String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  customer            Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@unique([customerId, category, key])
+  @@index([customerId, category])
+}
