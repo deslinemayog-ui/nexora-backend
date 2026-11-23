@@ -800,19 +800,19 @@ export const App: React.FC = () => {
 
   const openFollowUpModal = (task: FollowUpTask) => {
     setActiveThreadTask(task);
-    const matched = imapReplies.filter((r) => r.receiptId === task.receiptId);
-    const latestInbound = matched[0];
-    if (latestInbound?.subject) {
-      setReplyDraftSubject(
-        /^re:/i.test(latestInbound.subject) ? latestInbound.subject : `Re: ${latestInbound.subject}`,
-      );
-      setReplyDraftMessage('');
-    } else {
-      setReplyDraftSubject(`Follow-Up: ${task.targetName} Application (${task.receiptId})`);
-      setReplyDraftMessage(
-        `Hello ${task.targetName} Team,\n\nI am writing to kindly follow up on my recent submission (${task.receiptId}). Please let me know if you need any additional information or would like to schedule a conversation.\n\nBest regards,\n${candidateName || currentUser?.displayName || 'Applicant'}`,
-      );
-    }
+    // const matched = imapReplies.filter((r) => r.receiptId === task.receiptId);
+    // const latestInbound = matched[0];
+    // if (latestInbound?.subject) {
+    //   setReplyDraftSubject(
+    //     /^re:/i.test(latestInbound.subject) ? latestInbound.subject : `Re: ${latestInbound.subject}`,
+    //   );
+    //   setReplyDraftMessage('');
+    // } else {
+    //   setReplyDraftSubject(`Follow-Up: ${task.targetName} Application (${task.receiptId})`);
+    //   setReplyDraftMessage(
+    //     `Hello ${task.targetName} Team,\n\nI am writing to kindly follow up on my recent submission (${task.receiptId}). Please let me know if you need any additional information or would like to schedule a conversation.\n\nBest regards,\n${candidateName || currentUser?.displayName || 'Applicant'}`,
+    //   );
+    // }
   };
 
   const readFilesAsBase64 = async (fileList: FileList | File[]): Promise<AttachedDocItem[]> => {
@@ -1029,8 +1029,8 @@ export const App: React.FC = () => {
     } else {
       loadConversationMessages(conv.id);
     }
-    if (conv.tasks.length > 0) {
-      setShowTasksDrawer(true);
+    if (typeof window !== 'undefined' && window.innerWidth <= 900) {
+      setSidebarCollapsed(true);
     }
   };
 
@@ -1156,6 +1156,9 @@ export const App: React.FC = () => {
   const handleNewConversation = () => {
     setActiveConvId(null);
     setMessages([]);
+    if (typeof window !== 'undefined' && window.innerWidth <= 900) {
+      setSidebarCollapsed(true);
+    }
   };
 
   // Select Task Card from Hero Screen -> Open tailored Prerequisites Modal for the chosen task
@@ -1391,7 +1394,6 @@ export const App: React.FC = () => {
       );
 
       setShowDossierModal(false);
-      setShowTasksDrawer(true);
 
       // 4. Post Candidate Submission Confirmation into Chat
       const userSummaryContent = `### 📄 Candidate Profile & Documents Registered\n- **Name:** ${candidateName}\n- **Target Role:** ${candidateRole}\n- **Location:** ${candidateLocation || 'Flexible / Remote'}\n- **CV / Resume:** ${uploadedCvFile ? `📎 \`${uploadedCvFile.name}\` (${(uploadedCvFile.size / 1024).toFixed(1)} KB)` : 'Not attached'}\n- **Contact:** 📞 ${candidatePhone} | ✉️ ${candidateEmail}\n- **Firebase Task Created:** \`${firebaseTaskId}\``;
@@ -1776,7 +1778,6 @@ export const App: React.FC = () => {
                 : c,
             ),
           );
-          setShowTasksDrawer(true);
         } else if (assistantText.includes('Autonomous Job Search & Applications Dispatched') || assistantText.includes('JOB-LK-')) {
           const lkMatch = assistantText.match(/JOB-LK-\d+/)?.[0] || `JOB-LK-${Math.floor(10000 + Math.random() * 90000)}`;
           const wfMatch = assistantText.match(/JOB-WF-\d+/)?.[0] || `JOB-WF-${Math.floor(10000 + Math.random() * 90000)}`;
@@ -1844,8 +1845,6 @@ export const App: React.FC = () => {
               targets: [{ name: dt.targetName, receiptId: dt.receiptId, portalUrl: dt.portalUrl }],
             }).catch((err) => console.warn('Firebase task sync error:', err));
           });
-
-          setShowTasksDrawer(true);
         }
       } else {
         const errDetail = json?.message || (res ? `HTTP ${res.status}` : 'Connection error');
@@ -1939,7 +1938,6 @@ export const App: React.FC = () => {
         }
 
         setShowDocModal(false);
-        setShowTasksDrawer(true);
 
         setMessages((prev) => [
           ...prev,
@@ -2252,7 +2250,12 @@ export const App: React.FC = () => {
           <div className="gpt-header-left">
             {sidebarCollapsed && (
               <button
-                onClick={() => setSidebarCollapsed(false)}
+                onClick={() => {
+                  if (typeof window !== 'undefined' && window.innerWidth <= 900) {
+                    setShowTasksDrawer(false);
+                  }
+                  setSidebarCollapsed(false);
+                }}
                 className="sidebar-icon-btn mr-1"
                 title="Open sidebar"
               >
@@ -2281,7 +2284,13 @@ export const App: React.FC = () => {
               <span className="header-credit-topup">+ Top Up</span>
             </button>
             <button
-              onClick={() => setShowTasksDrawer(!showTasksDrawer)}
+              onClick={() => {
+                const next = !showTasksDrawer;
+                if (next && typeof window !== 'undefined' && window.innerWidth <= 900) {
+                  setSidebarCollapsed(true);
+                }
+                setShowTasksDrawer(next);
+              }}
               className={`header-tasks-toggle-btn ${(activeConversation?.tasks.length || 0) > 0 ? 'has-tasks' : ''
                 }`}
             >
