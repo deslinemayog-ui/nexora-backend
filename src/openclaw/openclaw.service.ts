@@ -205,6 +205,49 @@ export class OpenClawService {
           throw httpErr;
         }
 
+        const nvidiaApiKey = process.env.NVIDIA_API_KEY?.trim();
+        if (nvidiaApiKey) {
+          try {
+            const nvidiaModel = process.env.NVIDIA_MODEL || 'meta/llama-3.3-70b-instruct';
+            const nimRes = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${nvidiaApiKey}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                model: nvidiaModel,
+                messages,
+                temperature: 0.4,
+                max_tokens: 2048,
+              }),
+              signal: AbortSignal.timeout(25000),
+            });
+
+            if (nimRes.ok) {
+              const nimJson = (await nimRes.json()) as {
+                id?: string;
+                choices?: Array<{ message?: { content?: string } }>;
+                usage?: { total_tokens?: number };
+              };
+              const nimText = nimJson.choices?.[0]?.message?.content?.trim();
+              if (nimText) {
+                return {
+                  runId: nimJson.id || `nim-${idempotencyKey}`,
+                  sessionKey: input.sessionKey,
+                  responseText: nimText,
+                  tokensUsed: nimJson.usage?.total_tokens ?? 0,
+                  toolCallsCount: 0,
+                  durationMs: Date.now() - startTime,
+                  status: 'COMPLETED',
+                };
+              }
+            }
+          } catch (nimErr) {
+            logger.debug({ nimErr }, 'Direct NVIDIA NIM API call failed; continuing fallback');
+          }
+        }
+
         const shouldUseLocalCli =
           input.useLocalCli ?? process.env.OPENCLAW_USE_LOCAL_CLI !== 'false';
 
