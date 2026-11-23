@@ -15,6 +15,7 @@ import {
   type CandidateDossier,
 } from './firebase';
 import { NexoraLogo, NexoraIcon } from './components/NexoraLogo';
+import { PdfViewer } from './components/PdfViewer';
 import {
   Plus,
   Briefcase,
@@ -366,6 +367,7 @@ export const App: React.FC = () => {
     fileSizeBytes: number;
   } | null>(null);
   const [pdfPreviewBlobUrl, setPdfPreviewBlobUrl] = useState<string | null>(null);
+  const [pdfPreviewBytes, setPdfPreviewBytes] = useState<ArrayBuffer | null>(null);
   const [pdfPreviewLoading, setPdfPreviewLoading] = useState(false);
   const [pdfPreviewError, setPdfPreviewError] = useState<string | null>(null);
   const [pdfEditPrompt, setPdfEditPrompt] = useState('');
@@ -393,6 +395,7 @@ export const App: React.FC = () => {
         if (prev) URL.revokeObjectURL(prev);
         return null;
       });
+      setPdfPreviewBytes(null);
       setPdfPreviewError(null);
       setPdfPreviewLoading(false);
       return;
@@ -410,10 +413,11 @@ export const App: React.FC = () => {
         if (!res.ok) {
           throw new Error(`HTTP ${res.status}`);
         }
-        const rawBlob = await res.blob();
-        const pdfBlob = new Blob([rawBlob], { type: 'application/pdf' });
+        const arrayBuf = await res.arrayBuffer();
+        const pdfBlob = new Blob([arrayBuf], { type: 'application/pdf' });
         createdUrl = URL.createObjectURL(pdfBlob);
         if (!cancelled) {
+          setPdfPreviewBytes(arrayBuf);
           setPdfPreviewBlobUrl((prev) => {
             if (prev) URL.revokeObjectURL(prev);
             return createdUrl;
@@ -424,6 +428,7 @@ export const App: React.FC = () => {
       } catch (err: any) {
         if (!cancelled) {
           setPdfPreviewError(err?.message || 'Could not load PDF preview');
+          setPdfPreviewBytes(null);
           setPdfPreviewBlobUrl(null);
         }
       } finally {
@@ -4124,11 +4129,7 @@ export const App: React.FC = () => {
                     </a>
                   </div>
                 ) : (
-                  <iframe
-                    src={pdfPreviewBlobUrl}
-                    title={previewPdfDoc.fileName}
-                    style={{ width: '100%', height: '100%', border: 'none', flex: 1 }}
-                  />
+                  <PdfViewer pdfData={pdfPreviewBytes} fileName={previewPdfDoc.fileName} />
                 )}
               </div>
 
