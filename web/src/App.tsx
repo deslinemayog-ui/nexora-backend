@@ -2380,7 +2380,10 @@ export const App: React.FC = () => {
         ) : (
           <div className="chat-scroll-stream">
             {messages.map((msg) => (
-              <div key={msg.id} className="chat-turn-container">
+              <div
+                key={msg.id}
+                className={`chat-turn-container ${msg.direction === 'INBOUND' ? 'user' : 'assistant'}`}
+              >
                 <div
                   className={`turn-avatar ${msg.direction === 'INBOUND' ? 'user' : 'assistant'
                     }`}
@@ -2592,7 +2595,7 @@ export const App: React.FC = () => {
             ))}
 
             {isSending && (
-              <div className="chat-turn-container">
+              <div className="chat-turn-container assistant">
                 <div className="turn-avatar assistant">
                   <NexoraIcon size={18} />
                 </div>
@@ -4323,64 +4326,71 @@ export const App: React.FC = () => {
                     <div
                       key={msg.id}
                       style={{
-                        alignSelf: isOutbound ? 'flex-end' : 'flex-start',
-                        maxWidth: '82%',
-                        padding: '10px 14px',
-                        borderRadius: isOutbound ? '14px 14px 4px 14px' : '14px 14px 14px 4px',
-                        background: isOutbound
-                          ? '#1d4ed8'
-                          : msg.isInterview
-                            ? 'rgba(16, 185, 129, 0.14)'
-                            : '#242424',
-                        border: isOutbound
-                          ? '1px solid #3b82f6'
-                          : msg.isInterview
-                            ? '1px solid rgba(16, 185, 129, 0.45)'
-                            : '1px solid #333333',
-                        color: '#f8fafc',
+                        display: 'flex',
+                        width: '100%',
+                        justifyContent: isOutbound ? 'flex-end' : 'flex-start',
                       }}
                     >
-                      <div className="flex items-center justify-between gap-3" style={{ marginBottom: '4px' }}>
-                        <span
-                          style={{
-                            fontSize: '11px',
-                            fontWeight: 700,
-                            color: isOutbound ? '#dbeafe' : msg.isInterview ? '#6ee7b7' : '#93c5fd',
-                          }}
-                        >
-                          {cleanSender}
-                          {msg.isInterview ? ' • 🎉 Interview' : ''}
-                        </span>
-                        <span style={{ fontSize: '10px', color: isOutbound ? '#bfdbfe' : '#94a3b8' }}>
-                          {shortTime}
-                        </span>
-                      </div>
-                      <div style={{ fontSize: '13px', whiteSpace: 'pre-wrap', lineHeight: 1.55, color: '#f1f5f9' }}>
-                        {msg.body}
-                      </div>
-                      {Array.isArray(msg.attachments) && msg.attachments.length > 0 && (
-                        <div className="flex flex-wrap gap-1.5 mt-2">
-                          {msg.attachments.map((att, attIdx) => (
-                            <span
-                              key={`${att.fileName}-${attIdx}`}
-                              style={{
-                                fontSize: '11px',
-                                padding: '2px 8px',
-                                borderRadius: '999px',
-                                background: 'rgba(15, 23, 42, 0.55)',
-                                border: '1px solid rgba(255,255,255,0.2)',
-                                color: '#e2e8f0',
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                gap: '4px',
-                              }}
-                            >
-                              <FileText className="w-3 h-3" />
-                              {att.fileName}
-                            </span>
-                          ))}
+                      <div
+                        style={{
+                          maxWidth: '78%',
+                          padding: '10px 14px',
+                          borderRadius: isOutbound ? '16px 16px 4px 16px' : '16px 16px 16px 4px',
+                          background: isOutbound
+                            ? 'linear-gradient(135deg, #2563eb, #1d4ed8)'
+                            : msg.isInterview
+                              ? 'rgba(16, 185, 129, 0.14)'
+                              : '#242424',
+                          border: isOutbound
+                            ? '1px solid #3b82f6'
+                            : msg.isInterview
+                              ? '1px solid rgba(16, 185, 129, 0.45)'
+                              : '1px solid #333333',
+                          color: '#f8fafc',
+                        }}
+                      >
+                        <div className="flex items-center justify-between gap-3" style={{ marginBottom: '4px' }}>
+                          <span
+                            style={{
+                              fontSize: '11px',
+                              fontWeight: 700,
+                              color: isOutbound ? '#dbeafe' : msg.isInterview ? '#6ee7b7' : '#93c5fd',
+                            }}
+                          >
+                            {cleanSender}
+                            {msg.isInterview ? ' • 🎉 Interview' : ''}
+                          </span>
+                          <span style={{ fontSize: '10px', color: isOutbound ? '#bfdbfe' : '#94a3b8' }}>
+                            {shortTime}
+                          </span>
                         </div>
-                      )}
+                        <div style={{ fontSize: '13px', whiteSpace: 'pre-wrap', lineHeight: 1.55, color: '#f1f5f9' }}>
+                          {msg.body}
+                        </div>
+                        {Array.isArray(msg.attachments) && msg.attachments.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5 mt-2">
+                            {msg.attachments.map((att, attIdx) => (
+                              <span
+                                key={`${att.fileName}-${attIdx}`}
+                                style={{
+                                  fontSize: '11px',
+                                  padding: '2px 8px',
+                                  borderRadius: '999px',
+                                  background: 'rgba(15, 23, 42, 0.55)',
+                                  border: '1px solid rgba(255,255,255,0.2)',
+                                  color: '#e2e8f0',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px',
+                                }}
+                              >
+                                <FileText className="w-3 h-3" />
+                                {att.fileName}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   );
                 });
