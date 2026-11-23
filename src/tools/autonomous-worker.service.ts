@@ -404,13 +404,16 @@ export class AutonomousWorkerService {
         });
       }
     } else if (params.agentType === AgentType.VISA_AGENT) {
-      const joined = allTexts.join(' ');
+      const joined = allTexts.join('\n');
+      const visaRoleMatch =
+        joined.match(/applying for a job\s*\(\s*([^)]+?)\s+in\s+[^)]+\)/i) ||
+        joined.match(/(?:^|\n)\s*(?:Target\s+(?:Job\s+)?Role|Profession|Job\s+Title)\s*:\s*([^\n|]+)/i);
       const skills = ['React', 'JavaScript', 'TypeScript', 'React Native', 'AWS', 'Node.js', 'Python', 'Java'].filter(
         (s) => joined.toLowerCase().includes(s.toLowerCase()),
       );
       const relocationData = await visaRelocationService.discoverRelocationTargets({
-        role: 'Software Developer',
-        skills: skills.length > 0 ? skills : ['React', 'JavaScript', 'AWS'],
+        role: visaRoleMatch?.[1]?.trim() || 'Software Developer',
+        skills: skills.length > 0 ? skills : undefined,
         destinationCountry: params.targetCountry || 'Germany',
         limit: 8,
       });

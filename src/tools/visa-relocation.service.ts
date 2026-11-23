@@ -216,28 +216,20 @@ export class VisaRelocationService {
       }
     }
 
-    const jobTargets: RelocationTarget[] = sponsoredJobs.map((j) => ({
-      name: `${j.title} — ${j.company} (Visa Relocation)`.slice(0, 90),
-      category: `Visa-Sponsored Role (${j.source.toUpperCase()} • ${j.location})`,
-      portalUrl: j.url,
-      applicationUrl: j.applyUrl,
-      contactEmail: j.contactEmail || `careers@${j.company.toLowerCase().replace(/[^a-z0-9]/g, '') || 'company'}.com`,
-      focusSummary: j.description.slice(0, 200) || `Visa relocation opportunity at ${j.company}`,
-      checkSizeOrBenefit: j.salary || 'Employer Visa Sponsorship',
-      liveReachable: true,
-    }));
+    const jobTargets: RelocationTarget[] = sponsoredJobs
+      .filter((j) => Boolean(j.contactEmail))
+      .map((j) => ({
+        name: `${j.title} — ${j.company} (Visa Relocation)`.slice(0, 90),
+        category: `Visa-Sponsored Role (${j.source.toUpperCase()} • ${j.location})`,
+        portalUrl: j.url,
+        applicationUrl: j.applyUrl,
+        contactEmail: j.contactEmail!,
+        focusSummary: j.description.slice(0, 200) || `Visa relocation opportunity at ${j.company}`,
+        checkSizeOrBenefit: j.salary || 'Employer Visa Sponsorship',
+        liveReachable: true,
+      }));
 
     const portalTargets: RelocationTarget[] = [
-      ...pathways.map((p) => ({
-        name: `${p.country} — ${p.pathwayName}`,
-        category: `Official Visa Pathway (${p.category})`,
-        portalUrl: p.officialPortalUrl,
-        applicationUrl: p.officialPortalUrl,
-        contactEmail: `relocation-desk@${normalizeCountryKey(p.country)}.gov-advisor.org`,
-        focusSummary: `${p.estimatedProcessing} processing • ${p.keyRequirements[0] || ''}`,
-        checkSizeOrBenefit: p.estimatedProcessing,
-        liveReachable: true,
-      })),
       {
         name: 'Relocate.me — International Visa-Sponsored Tech Relocation',
         category: 'Global Tech Relocation Portal',

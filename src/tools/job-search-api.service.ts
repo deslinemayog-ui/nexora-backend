@@ -30,7 +30,7 @@ export interface JobSearchQuery {
   limit?: number;
 }
 
-function stripHtml(html: string): string {
+export function stripHtml(html: string): string {
   return String(html || '')
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
@@ -99,7 +99,7 @@ function isAggregatorOrNoiseHost(hostOrEmail: string): boolean {
   return AGGREGATOR_AND_NOISE_DOMAINS.some((d) => lower.includes(d));
 }
 
-function isValidCompanyEmail(email?: string): email is string {
+export function isValidCompanyEmail(email?: string): email is string {
   if (!email) return false;
   const clean = email.trim().toLowerCase();
   if (!/^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/.test(clean)) return false;
@@ -115,7 +115,7 @@ function isValidCompanyEmail(email?: string): email is string {
   return true;
 }
 
-function getBingMarketParams(targetCountry?: string): string {
+export function getBingMarketParams(targetCountry?: string): string {
   const c = (targetCountry || '').toLowerCase();
   if (c.includes('south africa')) return '&mkt=en-ZA&cc=za';
   if (c.includes('uk') || c.includes('united kingdom')) return '&mkt=en-GB&cc=gb';
@@ -137,7 +137,7 @@ function domainMatchesCompany(hostOrEmail: string, companyName: string): boolean
   return tokens.some((t) => cleanHost.includes(t));
 }
 
-function extractEmailFromText(text: string): string | undefined {
+export function extractEmailFromText(text: string): string | undefined {
   const mailtoMatches = [...text.matchAll(/mailto:([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/gi)]
     .map((m) => m[1])
     .filter(isValidCompanyEmail);
@@ -176,7 +176,7 @@ function decodeSearchResultUrl(rawHref: string): string {
   return rawHref;
 }
 
-function extractBingResults(html: string): Array<{ url: string; title: string }> {
+export function extractBingResults(html: string): Array<{ url: string; title: string }> {
   const results: Array<{ url: string; title: string }> = [];
   const seen = new Set<string>();
   const matches = [...html.matchAll(/<h2[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)];
@@ -195,7 +195,7 @@ function extractBingResults(html: string): Array<{ url: string; title: string }>
   return results;
 }
 
-async function fetchHtmlQuick(url: string, timeoutMs = 4500): Promise<{ finalUrl: string; html: string } | null> {
+export async function fetchHtmlQuick(url: string, timeoutMs = 4500): Promise<{ finalUrl: string; html: string } | null> {
   try {
     const res = await fetch(url, {
       redirect: 'follow',

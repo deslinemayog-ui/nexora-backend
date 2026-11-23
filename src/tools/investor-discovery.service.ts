@@ -1,4 +1,12 @@
 import { logger } from '../utils/logger';
+import {
+  extractBingResults,
+  extractEmailFromText,
+  fetchHtmlQuick,
+  getBingMarketParams,
+  isValidCompanyEmail,
+  stripHtml,
+} from './job-search-api.service';
 
 export interface InvestorTarget {
   name: string;
@@ -139,12 +147,13 @@ export class InvestorDiscoveryService {
 
     scored.sort((a, b) => b.score - a.score);
 
-    logger.info(
-      { industry: params.industry, fundingStage: params.fundingStage, count: Math.min(scored.length, limit) },
-      'Matched active VC & accelerator portals for INVESTOR_AGENT',
+    const liveTargets = await this.discoverLiveInvestors(
+      params.industry || 'Software & AI',
+      params.fundingStage || 'Seed',
+      params.targetCountry,
     );
 
-    return scored.slice(0, limit).map(({ item }) => ({
+    const curatedTargets: InvestorTarget[] = scored.map(({ item }) => ({
       name: item.name,
       category: `VC / Accelerator (${params.fundingStage || 'Seed'})`,
       portalUrl: item.portalUrl,
@@ -154,6 +163,76 @@ export class InvestorDiscoveryService {
       checkSizeOrBenefit: item.checkSize,
       liveReachable: true,
     }));
+
+    const combined = [...liveTargets, ...curatedTargets].slice(0, limit);
+
+    logger.info(
+      {
+        industry: params.industry,
+        fundingStage: params.fundingStage,
+        liveScraped: liveTargets.length,
+        count: combined.length,
+      },
+      'Matched & scraped VC/investor targets for INVESTOR_AGENT',
+    );
+
+    return combined;
+  }
+
+  private async discoverLiveInvestors(
+    industry: string,
+    fundingStage: string,
+    targetCountry?: string,
+  ): Promise<InvestorTarget[]> {
+    if (process.env.NODE_ENV === 'test' || process.env.VITEST) return [];
+    try {
+      const mkt = getBingMarketParams(targetCountry);
+      const q = `"${industry}" "${fundingStage}" venture capital OR angel investor ${targetCountry || ''} pitch OR contact email`;
+      const bingUrl = `https://www.bing.com/search?q=${encodeURIComponent(q)}${mkt}`;
+      const searchPage = await fetchHtmlQuick(bingUrl, 4500);
+      if (!searchPage) return [];
+
+      const candidates = extractBingResults(searchPage.html).slice(0, 5);
+      const settled = await Promise.allSettled(
+        candidates.map(async (c): Promise<InvestorTarget | null> => {
+          const page = await fetchHtmlQuick(c.url, 4000);
+          if (!page) return null;
+          const clean = stripHtml(page.html);
+          let email = extractEmailFromText(page.html) || extractEmailFromText(clean);
+          if (!email) {
+            try {
+              const origin = new URL(page.finalUrl).origin;
+              const contactPage = await fetchHtmlQuick(`${origin}/contact`, 3000);
+              if (contactPage) {
+                email =
+                  extractEmailFromText(contactPage.html) ||
+                  extractEmailFromText(stripHtml(contactPage.html));
+              }
+            } catch {
+              // ignore
+            }
+          }
+          if (!isValidCompanyEmail(email)) return null;
+          return {
+            name: c.title.split(/[|\-–—]/)[0]?.trim().slice(0, 80) || 'Venture Investor',
+            category: `Live VC / Investor (${fundingStage})`,
+            portalUrl: page.finalUrl,
+            applicationUrl: page.finalUrl,
+            contactEmail: email,
+            focusSummary: clean.slice(0, 220),
+            checkSizeOrBenefit: 'Active Venture / Angel Investor',
+            liveReachable: true,
+          } satisfies InvestorTarget;
+        }),
+      );
+
+      return settled
+        .filter((r): r is PromiseFulfilledResult<InvestorTarget | null> => r.status === 'fulfilled')
+        .map((r) => r.value)
+        .filter((v): v is InvestorTarget => Boolean(v));
+    } catch {
+      return [];
+    }
   }
 }
 

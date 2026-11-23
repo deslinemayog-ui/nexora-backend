@@ -1,4 +1,12 @@
 import { logger } from '../utils/logger';
+import {
+  extractBingResults,
+  extractEmailFromText,
+  fetchHtmlQuick,
+  getBingMarketParams,
+  isValidCompanyEmail,
+  stripHtml,
+} from './job-search-api.service';
 
 export interface ScholarshipTarget {
   name: string;
@@ -47,7 +55,7 @@ const CURATED_SCHOLARSHIPS: Array<{
     levels: ['master', 'msc', 'postgraduate'],
     portalUrl: 'https://www.eacea.ec.europa.eu/scholarships/erasmus-mundus-catalogue_en',
     applicationUrl: 'https://www.eacea.ec.europa.eu/scholarships/erasmus-mundus-catalogue_en',
-    contactEmail: 'erasmus-admissions@ec-program.eu',
+    contactEmail: 'eac-info@ec.europa.eu',
     focusSummary: 'Multi-country European Master’s degrees with full tuition waiver and €1,400/month stipend',
     benefit: 'Full Tuition + €1,400/mo Stipend',
   },
@@ -132,12 +140,9 @@ export class ScholarshipDiscoveryService {
 
     scored.sort((a, b) => b.score - a.score);
 
-    logger.info(
-      { field, studyLevel: params.studyLevel, targetCountry: params.targetCountry, count: Math.min(scored.length, limit) },
-      'Matched verified scholarship programs for EDUCATION_AGENT',
-    );
+    const liveTargets = await this.discoverLiveScholarships(field, params.studyLevel, params.targetCountry);
 
-    return scored.slice(0, limit).map(({ item }) => ({
+    const curatedTargets: ScholarshipTarget[] = scored.map(({ item }) => ({
       name: item.name,
       category: `Scholarship Portal (${params.studyLevel || 'Graduate'} • ${field})`,
       portalUrl: item.portalUrl,
@@ -147,6 +152,77 @@ export class ScholarshipDiscoveryService {
       checkSizeOrBenefit: item.benefit,
       liveReachable: true,
     }));
+
+    const combined = [...liveTargets, ...curatedTargets].slice(0, limit);
+
+    logger.info(
+      {
+        field,
+        studyLevel: params.studyLevel,
+        targetCountry: params.targetCountry,
+        liveScraped: liveTargets.length,
+        count: combined.length,
+      },
+      'Matched & scraped scholarship programs for EDUCATION_AGENT',
+    );
+
+    return combined;
+  }
+
+  private async discoverLiveScholarships(
+    field: string,
+    studyLevel?: string,
+    targetCountry?: string,
+  ): Promise<ScholarshipTarget[]> {
+    if (process.env.NODE_ENV === 'test' || process.env.VITEST) return [];
+    try {
+      const mkt = getBingMarketParams(targetCountry);
+      const q = `"${field}" ${studyLevel || ''} scholarship ${targetCountry || ''} admissions OR scholarships email`;
+      const bingUrl = `https://www.bing.com/search?q=${encodeURIComponent(q)}${mkt}`;
+      const searchPage = await fetchHtmlQuick(bingUrl, 4500);
+      if (!searchPage) return [];
+
+      const candidates = extractBingResults(searchPage.html).slice(0, 5);
+      const settled = await Promise.allSettled(
+        candidates.map(async (c): Promise<ScholarshipTarget | null> => {
+          const page = await fetchHtmlQuick(c.url, 4000);
+          if (!page) return null;
+          const clean = stripHtml(page.html);
+          let email = extractEmailFromText(page.html) || extractEmailFromText(clean);
+          if (!email) {
+            try {
+              const origin = new URL(page.finalUrl).origin;
+              const contactPage = await fetchHtmlQuick(`${origin}/contact`, 3000);
+              if (contactPage) {
+                email =
+                  extractEmailFromText(contactPage.html) ||
+                  extractEmailFromText(stripHtml(contactPage.html));
+              }
+            } catch {
+              // ignore
+            }
+          }
+          if (!isValidCompanyEmail(email)) return null;
+          return {
+            name: c.title.split(/[|\-–—]/)[0]?.trim().slice(0, 80) || 'Scholarship Program',
+            category: `Live Scholarship (${studyLevel || 'Graduate'} • ${field})`,
+            portalUrl: page.finalUrl,
+            applicationUrl: page.finalUrl,
+            contactEmail: email,
+            focusSummary: clean.slice(0, 220),
+            checkSizeOrBenefit: 'Verified Scholarship Portal',
+            liveReachable: true,
+          } satisfies ScholarshipTarget;
+        }),
+      );
+
+      return settled
+        .filter((r): r is PromiseFulfilledResult<ScholarshipTarget | null> => r.status === 'fulfilled')
+        .map((r) => r.value)
+        .filter((v): v is ScholarshipTarget => Boolean(v));
+    } catch {
+      return [];
+    }
   }
 }
 
