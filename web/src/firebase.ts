@@ -242,4 +242,111 @@ export async function clearUserFirestoreData(userId: string): Promise<void> {
   }
 }
 
+export interface FirestoreAgentConfig {
+  id: string;
+  agentType: string;
+  taskKey: string;
+  name: string;
+  description: string;
+  costPerSubmissionCents: number;
+  costPerSubmissionDollars: string;
+  sortOrder: number;
+  isActive: boolean;
+}
+
+const DEFAULT_FIRESTORE_AGENTS: Omit<FirestoreAgentConfig, 'id'>[] = [
+  {
+    agentType: 'JOB_AGENT',
+    taskKey: 'employment',
+    name: 'Find Employment',
+    description: 'Draft CV, match Indeed/Adzuna/Remotive roles & apply autonomously',
+    costPerSubmissionCents: 25,
+    costPerSubmissionDollars: '0.25',
+    sortOrder: 1,
+    isActive: true,
+  },
+  {
+    agentType: 'VISA_AGENT',
+    taskKey: 'relocate',
+    name: 'Relocate Abroad',
+    description: 'Build Relocation & Visa Dossier PDF, match sponsored roles & pathways',
+    costPerSubmissionCents: 200,
+    costPerSubmissionDollars: '2.00',
+    sortOrder: 2,
+    isActive: true,
+  },
+  {
+    agentType: 'INVESTOR_AGENT',
+    taskKey: 'investors',
+    name: 'Find Investors',
+    description: 'Compile Investor Pitch PDF, match VCs/accelerators & submit',
+    costPerSubmissionCents: 100,
+    costPerSubmissionDollars: '1.00',
+    sortOrder: 3,
+    isActive: true,
+  },
+  {
+    agentType: 'EDUCATION_AGENT',
+    taskKey: 'scholarships',
+    name: 'Find Scholarships',
+    description: 'Draft Motivation Letter PDF, match global scholarships & apply',
+    costPerSubmissionCents: 100,
+    costPerSubmissionDollars: '1.00',
+    sortOrder: 4,
+    isActive: true,
+  },
+];
+
+/**
+ * Load all 4 task categories / agent fees directly from Firebase Firestore (`agents` collection),
+ * seeding any missing category documents so they can be viewed and edited in Firebase Console.
+ */
+export async function loadOrSeedFirestoreAgents(): Promise<FirestoreAgentConfig[]> {
+  try {
+    const colRef = collection(db, 'agents');
+    const snap = await getDocs(colRef);
+    const byId = new Map<string, FirestoreAgentConfig>();
+
+    for (const d of snap.docs) {
+      const raw = d.data() as Partial<FirestoreAgentConfig>;
+      const cents =
+        typeof raw.costPerSubmissionCents === 'number'
+          ? raw.costPerSubmissionCents
+          : typeof raw.costPerSubmissionDollars === 'string'
+            ? Math.round(parseFloat(raw.costPerSubmissionDollars) * 100)
+            : 100;
+      const safeCents = Number.isFinite(cents) ? cents : 100;
+      byId.set(d.id, {
+        id: d.id,
+        agentType: raw.agentType || d.id,
+        taskKey: raw.taskKey || 'employment',
+        name: raw.name || d.id,
+        description: raw.description || '',
+        costPerSubmissionCents: safeCents,
+        costPerSubmissionDollars: (safeCents / 100).toFixed(2),
+        sortOrder: typeof raw.sortOrder === 'number' ? raw.sortOrder : 99,
+        isActive: raw.isActive !== false,
+      });
+    }
+
+    for (const def of DEFAULT_FIRESTORE_AGENTS) {
+      if (!byId.has(def.agentType)) {
+        await setDoc(doc(db, 'agents', def.agentType), {
+          ...def,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        byId.set(def.agentType, { id: def.agentType, ...def });
+      }
+    }
+
+    return Array.from(byId.values())
+      .filter((a) => a.isActive)
+      .sort((a, b) => a.sortOrder - b.sortOrder);
+  } catch (err) {
+    console.warn('Could not load agents from Firestore:', err);
+    return DEFAULT_FIRESTORE_AGENTS.map((a) => ({ id: a.agentType, ...a }));
+  }
+}
+
 export { onAuthStateChanged, type User };

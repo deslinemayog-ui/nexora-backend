@@ -1278,7 +1278,7 @@ export class NexoraRepository {
         openclawAgentId: 'job-agent',
         allowedTools: ['job_search', 'cv_pdf', 'browser_form_fill', 'email_outreach'],
         restrictedActions: [],
-        costPerSubmissionCents: 100,
+        costPerSubmissionCents: 25,
         sortOrder: 1,
         isActive: true,
       },
@@ -1371,7 +1371,9 @@ export class NexoraRepository {
     const agents = await this.listAgents();
     const found = agents.find((a) => a.agentType === agentType);
     if (found) return found.costPerSubmissionCents;
-    return agentType === AgentType.VISA_AGENT ? 200 : 100;
+    if (agentType === AgentType.VISA_AGENT) return 200;
+    if (agentType === AgentType.JOB_AGENT) return 25;
+    return 100;
   }
 
   public async getCustomerWallet(customerId: string): Promise<{
@@ -1409,13 +1411,17 @@ export class NexoraRepository {
     customerId: string,
     agentType: AgentType,
     submissionCount: number,
+    overrideUnitCostCents?: number,
   ): Promise<{
     chargedCents: number;
     remainingBalanceCents: number;
     remainingBalanceDollars: string;
     costPerSubmissionCents: number;
   }> {
-    const unitCost = await this.getAgentCostPerSubmissionCents(agentType);
+    const unitCost =
+      typeof overrideUnitCostCents === 'number' && overrideUnitCostCents >= 0
+        ? Math.round(overrideUnitCostCents)
+        : await this.getAgentCostPerSubmissionCents(agentType);
     const totalCharge = Math.max(0, submissionCount) * unitCost;
 
     if (!this.useInMemory) {

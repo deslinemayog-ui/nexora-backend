@@ -457,6 +457,7 @@ export async function buildApiServer(deps: ApiServerDependencies): Promise<Fasti
     conversationId: z.string().optional(),
     agentType: z.string().optional(),
     maxSubmissions: z.number().int().min(1).max(25).optional(),
+    costPerSubmissionCents: z.number().int().min(0).max(50000).optional(),
     deepThink: z.boolean().optional(),
     displayName: z.string().optional(),
     customerName: z.string().optional(),
@@ -613,6 +614,7 @@ export async function buildApiServer(deps: ApiServerDependencies): Promise<Fasti
               result.customerId,
               result.routedAgent,
               submittedCount,
+              body.costPerSubmissionCents,
             )
           : await deps.repository.getCustomerWallet(result.customerId);
 

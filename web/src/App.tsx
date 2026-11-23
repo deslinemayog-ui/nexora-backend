@@ -10,6 +10,7 @@ import {
   createFirebaseTask,
   loadUserFirebaseTasks,
   clearUserFirestoreData,
+  loadOrSeedFirestoreAgents,
   type User,
   type CandidateDossier,
 } from './firebase';
@@ -678,11 +679,16 @@ export const App: React.FC = () => {
   useEffect(() => {
     const loadAgentsAndWallet = async () => {
       try {
-        const agentsRes = await apiFetch('/api/v1/agents');
-        if (agentsRes.ok) {
-          const agentsJson = await agentsRes.json();
-          if (agentsJson.ok && Array.isArray(agentsJson.data)) {
-            setAgentCatalog(agentsJson.data);
+        const fsAgents = await loadOrSeedFirestoreAgents();
+        if (fsAgents.length > 0) {
+          setAgentCatalog(fsAgents);
+        } else {
+          const agentsRes = await apiFetch('/api/v1/agents');
+          if (agentsRes.ok) {
+            const agentsJson = await agentsRes.json();
+            if (agentsJson.ok && Array.isArray(agentsJson.data)) {
+              setAgentCatalog(agentsJson.data);
+            }
           }
         }
       } catch {
@@ -1536,14 +1542,18 @@ export const App: React.FC = () => {
         'Applicant';
       const userEmail = candidateEmail.trim() || currentUser?.email || 'info@empiredigitals.org';
 
+      const effectiveAgent = agentOverride || activeConversation?.agentType;
+      const matchedCatalogAgent = agentCatalog.find((a) => a.agentType === effectiveAgent);
+
       const res = await apiFetch('/api/v1/webchat/message', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           phoneNumber: userPhone,
           conversationId: currentConvId,
-          agentType: agentOverride || activeConversation?.agentType,
+          agentType: effectiveAgent,
           maxSubmissions: submissionLimit,
+          costPerSubmissionCents: matchedCatalogAgent?.costPerSubmissionCents,
           deepThink: deepThinkMode,
           displayName,
           customerName: candidateName.trim() || undefined,
@@ -2326,7 +2336,7 @@ export const App: React.FC = () => {
                 })
                 : TASK_CHOICES.map((c) => ({
                   ...c,
-                  costDollars: c.agent === 'VISA_AGENT' ? '2.00' : '1.00',
+                  costDollars: c.agent === 'JOB_AGENT' ? '0.25' : c.agent === 'VISA_AGENT' ? '2.00' : '1.00',
                 }))
               ).map((choice) => {
                 const IconComponent = choice.icon;
@@ -4178,7 +4188,15 @@ export const App: React.FC = () => {
                   type="button"
                   onClick={() => {
                     const refName = previewPdfDoc.fileName;
-                    const unitCost = activeConversation?.agentType === 'VISA_AGENT' ? 2 : 1;
+                    const activeAgent = activeConversation?.agentType || 'JOB_AGENT';
+                    const catalogMatch = agentCatalog.find((a) => a.agentType === activeAgent);
+                    const unitCost = catalogMatch
+                      ? catalogMatch.costPerSubmissionCents / 100
+                      : activeAgent === 'VISA_AGENT'
+                        ? 2
+                        : activeAgent === 'JOB_AGENT'
+                          ? 0.25
+                          : 1;
                     const estTotal = (submissionLimit * unitCost).toFixed(2);
                     setPreviewPdfDoc(null);
                     setConfirmModal({
@@ -4568,7 +4586,7 @@ export const App: React.FC = () => {
                   Buy Submission Credits (Paystack)
                 </h3>
                 <span className="text-xs text-slate-400">
-                  Current Balance: <strong className="text-emerald-400">${walletBalanceDollars}</strong> • $1/submission ($2 for Relocate)
+                  Current Balance: <strong className="text-emerald-400">${walletBalanceDollars}</strong> • $0.25/job • $1/submission • $2/relocate
                 </span>
               </div>
               <button onClick={() => setShowTopUpModal(false)} className="sidebar-icon-btn">
