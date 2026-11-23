@@ -134,8 +134,8 @@ export const buildApplicationEmailHtml = (
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>${escapeHtml(finalSubject)}</title>
 </head>
-<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f8fafc; margin: 0; padding: 28px 16px; color: #0f172a;">
-  <div style="max-width: 640px; margin: 0 auto; background-color: #ffffff; border-radius: 14px; overflow: hidden; box-shadow: 0 4px 20px rgba(15, 23, 42, 0.06); border: 1px solid #e2e8f0;">
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; margin: 0; color: #0f172a;">
+  <div style="max-width: 640px; margin: 0 auto; background-color: #ffffff; border-radius: 14px; overflow: hidden; box-shadow: 0 2px 5px rgba(15, 23, 42, 0.06); border: 1px solid #e2e8f0;">
     
     <div style="background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); color: #ffffff; padding: 24px 28px;">
       <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 1.2px; color: #38bdf8; font-weight: 700; margin-bottom: 8px;">
@@ -152,9 +152,8 @@ export const buildApplicationEmailHtml = (
     <div style="padding: 28px;">
       ${bodyHtmlParagraphs}
 
-      ${
-        fieldsRowsHtml
-          ? `
+      ${fieldsRowsHtml
+      ? `
       <div style="margin-top: 26px; border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden; background-color: #f8fafc;">
         <div style="padding: 10px 14px; background-color: #f1f5f9; border-bottom: 1px solid #e2e8f0; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: #334155;">
           Applicant Details
@@ -165,8 +164,8 @@ export const buildApplicationEmailHtml = (
           </tbody>
         </table>
       </div>`
-          : ''
-      }
+      : ''
+    }
     </div>
 
     <div style="background-color: #f8fafc; border-top: 1px solid #e2e8f0; padding: 14px 28px; font-size: 12px; color: #64748b; text-align: center;">
