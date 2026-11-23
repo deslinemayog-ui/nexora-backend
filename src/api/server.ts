@@ -777,7 +777,13 @@ export async function buildApiServer(deps: ApiServerDependencies): Promise<Fasti
       safeName,
     );
     const fallbackPath = path.resolve(process.cwd(), 'storage', 'screenshots', safeName);
-    const buffer = await fs.readFile(primaryPath).catch(() => fs.readFile(fallbackPath));
+    const buffer = await fs
+      .readFile(primaryPath)
+      .catch(() => fs.readFile(fallbackPath))
+      .catch(() => null);
+    if (!buffer) {
+      return reply.status(404).send({ ok: false, error: 'Document not found' });
+    }
     reply.header('Content-Type', 'image/png');
     reply.header('Cross-Origin-Resource-Policy', 'cross-origin');
     return reply.send(buffer);
@@ -1168,7 +1174,13 @@ export async function buildApiServer(deps: ApiServerDependencies): Promise<Fasti
       safeName,
     );
     const fallbackPath = path.resolve(process.cwd(), 'storage', 'documents', safeName);
-    const buffer = await fs.readFile(primaryPath).catch(() => fs.readFile(fallbackPath));
+    const buffer = await fs
+      .readFile(primaryPath)
+      .catch(() => fs.readFile(fallbackPath))
+      .catch(() => null);
+    if (!buffer) {
+      return reply.status(404).send({ ok: false, error: 'Document not found' });
+    }
     reply.header('Content-Type', 'application/pdf');
     reply.header('Content-Disposition', `inline; filename="${safeName}"`);
     reply.header('Cross-Origin-Resource-Policy', 'cross-origin');

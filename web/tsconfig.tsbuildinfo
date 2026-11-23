@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/firebase.ts","./src/main.tsx","./src/components/nexoralogo.tsx","./src/pages/landingpage.tsx","./src/pages/legalpages.tsx"],"version":"5.9.3"}
+{"root":["./src/app.tsx","./src/firebase.ts","./src/main.tsx","./src/components/nexoralogo.tsx","./src/components/pdfviewer.tsx","./src/pages/landingpage.tsx","./src/pages/legalpages.tsx"],"version":"5.9.3"}

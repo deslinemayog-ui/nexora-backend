@@ -409,9 +409,13 @@ export const App: React.FC = () => {
     (async () => {
       try {
         const targetUrl = resolveApiUrl(previewPdfDoc.downloadUrl);
-        const res = await fetch(targetUrl);
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`);
+        let res = await fetch(targetUrl).catch(() => null);
+        if ((!res || !res.ok) && !API_BASE_URL && previewPdfDoc.downloadUrl.startsWith('/')) {
+          const fallbackUrl = `https://34-31-73-220.sslip.io${previewPdfDoc.downloadUrl}`;
+          res = await fetch(fallbackUrl);
+        }
+        if (!res || !res.ok) {
+          throw new Error(`HTTP ${res?.status || 'Network Error'}`);
         }
         const arrayBuf = await res.arrayBuffer();
         const pdfBlob = new Blob([arrayBuf], { type: 'application/pdf' });
@@ -4128,8 +4132,14 @@ export const App: React.FC = () => {
                       <span>Open / Download PDF</span>
                     </a>
                   </div>
-                ) : (
+                ) : typeof window !== 'undefined' && window.innerWidth <= 768 ? (
                   <PdfViewer pdfData={pdfPreviewBytes} fileName={previewPdfDoc.fileName} />
+                ) : (
+                  <iframe
+                    src={pdfPreviewBlobUrl || undefined}
+                    title={previewPdfDoc.fileName}
+                    style={{ width: '100%', height: '100%', border: 'none', flex: 1 }}
+                  />
                 )}
               </div>
 
