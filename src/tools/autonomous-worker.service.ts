@@ -489,6 +489,29 @@ export class AutonomousWorkerService {
       }
     }
 
+    const joinedAllText = allTexts.join('\n');
+    const extractedEmailMatch =
+      joinedAllText.match(/Contact:\s*Email\s+([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/i) ||
+      joinedAllText.match(/\bEmail\s*[:=]\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/i) ||
+      joinedAllText.match(/\b([a-zA-Z0-9._%+-]+@(?!nexora\.ai\b|example\.com\b)[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\b/i);
+    const extractedPhoneMatch =
+      joinedAllText.match(/Phone\s*[:=]?\s*(\+?[\d][\d\s()-]{6,16}\d)/i) ||
+      joinedAllText.match(/\b(\+?\d{9,15})\b/);
+
+    const cleanParamEmail =
+      params.customerEmail && !/^(client|candidate)@nexora\.ai$/i.test(params.customerEmail.trim())
+        ? params.customerEmail.trim()
+        : '';
+    const cleanParamPhone =
+      params.customerPhone && params.customerPhone.trim() !== '+27820000000'
+        ? params.customerPhone.trim()
+        : '';
+
+    const resolvedCustomerEmail = extractedEmailMatch?.[1]?.trim() || cleanParamEmail;
+    const resolvedCustomerPhone =
+      (extractedPhoneMatch?.[1] ? extractedPhoneMatch[1].replace(/\s+/g, '') : '') ||
+      cleanParamPhone;
+
     if (!generatedDocument && params.agentType === AgentType.JOB_AGENT) {
       try {
         const joinedText = allTexts.join(' ');
@@ -506,8 +529,8 @@ export class AutonomousWorkerService {
         generatedDocument = await documentGeneratorService.generateCvPdf({
           candidateName,
           targetRole,
-          email: params.customerEmail || 'candidate@nexora.ai',
-          phone: params.customerPhone || '+27820000000',
+          email: resolvedCustomerEmail || 'Not provided',
+          phone: resolvedCustomerPhone || 'Not provided',
           location: params.targetCountry || 'Johannesburg / Remote',
           summary: `${targetRole} with extensive industry experience building scalable web and mobile applications, leading engineering teams, and delivering production cloud systems.`,
           skills: knownSkills.length > 0 ? knownSkills : ['React', 'TypeScript', 'Node.js', 'AWS'],
@@ -540,8 +563,8 @@ export class AutonomousWorkerService {
         generatedDocument = await documentGeneratorService.generateBusinessPlanPdf({
           companyName: params.customerName || 'Client Venture',
           founderName: params.customerName || 'Client Founder',
-          founderEmail: params.customerEmail || 'client@nexora.ai',
-          founderPhone: params.customerPhone || '+27820000000',
+          founderEmail: resolvedCustomerEmail || 'Not provided',
+          founderPhone: resolvedCustomerPhone || 'Not provided',
           websiteUrl: scrapedCustomerSites[0]?.url,
           targetRaise: 'Seed / Growth Capital',
           targetPages: 12,
@@ -556,13 +579,13 @@ export class AutonomousWorkerService {
     const submittedApplications = await this.submitApplicationsOnBehalfOfUser({
       customerId: params.customerId,
       agentType: params.agentType,
-      allContextText: allTexts.join('\n'),
+      allContextText: joinedAllText,
       scrapedCustomerSites,
       discoveredTargets: discoveredTargets.slice(0, submissionLimit),
       generatedDocument,
       customerName: params.customerName || 'Applicant',
-      customerEmail: params.customerEmail || 'client@nexora.ai',
-      customerPhone: params.customerPhone || '+27820000000',
+      customerEmail: resolvedCustomerEmail,
+      customerPhone: resolvedCustomerPhone,
       maxSubmissions: submissionLimit,
     });
 
@@ -862,6 +885,11 @@ export class AutonomousWorkerService {
     for (const target of params.discoveredTargets) {
       const receiptId = `SUB-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
 
+      const contactDisplay =
+        [params.customerEmail, params.customerPhone]
+          .filter((v) => v && v.trim() && v.trim() !== 'Not provided')
+          .join(' | ') || 'Provided in attached CV';
+
       const submittedFields: Record<string, string> =
         params.agentType === AgentType.INVESTOR_AGENT
           ? {
@@ -870,12 +898,12 @@ export class AutonomousWorkerService {
               website_url: websiteUrl,
               stage: 'Seed / Growth Stage',
               traction_summary: productPitch,
-              founder_contact: `${applicantUserLabel} (${params.customerEmail} | ${params.customerPhone})`,
+              founder_contact: `${applicantUserLabel} (${contactDisplay})`,
             }
           : {
               sent_on_behalf_of: applicantUserLabel,
               applicant_name: applicantUserLabel,
-              applicant_contact: `${params.customerEmail} | ${params.customerPhone}`,
+              applicant_contact: contactDisplay,
               target_portal: target.applicationUrl,
               profile_summary: productPitch,
               submission_mode: 'Nexora AI Autonomous Workforce Agent',
@@ -907,7 +935,7 @@ export class AutonomousWorkerService {
                 '',
                 `Please find attached the Curriculum Vitae (CV) for ${params.customerName || applicantUserLabel} in application for suitable roles listed on ${target.name}.`,
                 '',
-                `Candidate Contact: ${params.customerEmail} | ${params.customerPhone}`,
+                `Candidate Contact: ${contactDisplay}`,
                 `Attached Document: ${params.generatedDocument?.fileName || 'Candidate_CV.pdf'}`,
                 '',
                 `Submitted on behalf of ${params.customerName || applicantUserLabel} via Nexora AI Autonomous Workforce.`,
