@@ -189,7 +189,7 @@ export class DocumentGeneratorService {
         filePath,
         fileSizeBytes: stats.size,
         estimatedPages: options.targetPages || 12,
-        downloadUrl: `http://127.0.0.1:3000/api/v1/documents/download/${fileName}`,
+        downloadUrl: `/api/v1/documents/download/${fileName}`,
         emailedTo,
         smtpMessageId,
         createdAt: new Date().toISOString(),

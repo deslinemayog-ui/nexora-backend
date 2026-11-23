@@ -99,7 +99,7 @@ interface ConversationItem {
   };
 }
 
-const STORAGE_KEY = 'nexora_user_conversations_v3';
+const LEGACY_STORAGE_KEY = 'nexora_user_conversations_v3';
 
 const getSessionPhoneNumber = (user: User | null): string => {
   if (user?.phoneNumber && user.phoneNumber.replace(/\D/g, '').length >= 7) {
@@ -116,12 +116,16 @@ const getSessionPhoneNumber = (user: User | null): string => {
   return '+447700900777';
 };
 
-const loadSavedConversations = (): ConversationItem[] => {
+const getConversationsStorageKey = (uid?: string | null): string =>
+  uid ? `${LEGACY_STORAGE_KEY}_${uid}` : `${LEGACY_STORAGE_KEY}_guest`;
+
+const loadSavedConversations = (uid?: string | null): ConversationItem[] => {
   try {
-    // Wipe previous test conversation storage keys
+    // Wipe previous shared/unscoped conversation storage keys so users never see another user's tasks
     localStorage.removeItem('nexora_user_conversations');
     localStorage.removeItem('nexora_user_conversations_v2');
-    const raw = localStorage.getItem(STORAGE_KEY);
+    localStorage.removeItem(LEGACY_STORAGE_KEY);
+    const raw = localStorage.getItem(getConversationsStorageKey(uid));
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
@@ -183,8 +187,9 @@ export const App: React.FC = () => {
   const [showTasksDrawer, setShowTasksDrawer] = useState(false);
   const [showPlusMenu, setShowPlusMenu] = useState(false);
 
-  // Conversations & Tasks State
-  const [conversations, setConversations] = useState<ConversationItem[]>(loadSavedConversations);
+  // Conversations & Tasks State (strictly scoped to active user or guest)
+  const currentStorageUidRef = useRef<string | null>(null);
+  const [conversations, setConversations] = useState<ConversationItem[]>(() => loadSavedConversations(null));
   const [activeConvId, setActiveConvId] = useState<string | null>(null);
 
   // Chat & Messaging State
@@ -340,6 +345,9 @@ export const App: React.FC = () => {
     downloadUrl: string;
     fileSizeBytes: number;
   } | null>(null);
+  const [pdfPreviewBlobUrl, setPdfPreviewBlobUrl] = useState<string | null>(null);
+  const [pdfPreviewLoading, setPdfPreviewLoading] = useState(false);
+  const [pdfPreviewError, setPdfPreviewError] = useState<string | null>(null);
   const [pdfEditPrompt, setPdfEditPrompt] = useState('');
 
   const formatTaskTitleWithDate = (baseTitle: string): string => {
@@ -356,40 +364,79 @@ export const App: React.FC = () => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const cvFileInputRef = useRef<HTMLInputElement>(null);
 
-  // Subscribe to Firebase Auth & hydrate saved Prerequisite Form from Firestore/localStorage
+  // Fetch & render Review/Edit PDF via Blob URL so cross-origin iframe restrictions never block it
   useEffect(() => {
-    const hydrateSavedForm = async (uid: string, authUser?: User | null) => {
-      const saved = await loadCandidateDossier(uid);
-      if (authUser?.uid) {
-        const fbTasks = await loadUserFirebaseTasks(authUser.uid);
-        if (fbTasks.length > 0) {
-          setConversations((prev) => {
-            const existingIds = new Set(prev.map((c) => c.id));
-            const additions: ConversationItem[] = fbTasks
-              .filter((t) => !existingIds.has(t.conversationId || t.id || ''))
-              .map((t) => ({
-                id: t.conversationId || t.id || `task-${Date.now()}`,
-                title: t.title || 'Saved Task',
-                agentType: t.agentType || 'SUPERVISOR',
-                lastMessageSnippet: t.status === 'SUBMITTED' ? 'Submitted applications' : 'Saved task',
-                updatedAt: 'Synced',
-                tasks: Array.isArray(t.targets)
-                  ? t.targets.map((s: any, idx: number) => ({
-                      id: s.receiptId || `sub-${idx}`,
-                      targetName: s.targetName || 'Target',
-                      category: s.category || 'Submission',
-                      portalUrl: s.portalUrl || '#',
-                      contactEmail: s.deliveredToEmail || s.contactEmail,
-                      status: s.status || 'SUBMITTED',
-                      receiptId: s.receiptId || `SUB-${idx}`,
-                      submittedAt: s.submittedAt || new Date().toISOString(),
-                    }))
-                  : [],
-              }));
-            return additions.length > 0 ? [...prev, ...additions] : prev;
+    if (!previewPdfDoc?.downloadUrl) {
+      setPdfPreviewBlobUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return null;
+      });
+      setPdfPreviewError(null);
+      setPdfPreviewLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    let createdUrl: string | null = null;
+    setPdfPreviewLoading(true);
+    setPdfPreviewError(null);
+
+    (async () => {
+      try {
+        const targetUrl = resolveApiUrl(previewPdfDoc.downloadUrl);
+        const res = await fetch(targetUrl);
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        const rawBlob = await res.blob();
+        const pdfBlob = new Blob([rawBlob], { type: 'application/pdf' });
+        createdUrl = URL.createObjectURL(pdfBlob);
+        if (!cancelled) {
+          setPdfPreviewBlobUrl((prev) => {
+            if (prev) URL.revokeObjectURL(prev);
+            return createdUrl;
           });
+        } else {
+          URL.revokeObjectURL(createdUrl);
+        }
+      } catch (err: any) {
+        if (!cancelled) {
+          setPdfPreviewError(err?.message || 'Could not load PDF preview');
+          setPdfPreviewBlobUrl(null);
+        }
+      } finally {
+        if (!cancelled) {
+          setPdfPreviewLoading(false);
         }
       }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (createdUrl) {
+        URL.revokeObjectURL(createdUrl);
+      }
+    };
+  }, [previewPdfDoc]);
+
+  // Subscribe to Firebase Auth & strictly scope tasks/dossier to the logged-in user (or guest when logged out)
+  useEffect(() => {
+    let activeLoadToken = 0;
+
+    const hydrateForUser = async (authUser: User | null) => {
+      const loadToken = ++activeLoadToken;
+      const uid = authUser?.uid || null;
+      currentStorageUidRef.current = uid;
+
+      // Immediately clear previous user's UI state and load only this user's local cache
+      resetUserScopedUiState();
+      const cachedConvs = loadSavedConversations(uid);
+      setConversations(cachedConvs);
+
+      const dossierUid = uid || 'guest-user';
+      const saved = await loadCandidateDossier(dossierUid);
+      if (loadToken !== activeLoadToken) return;
+
       if (saved) {
         if (saved.fullName) setCandidateName(saved.fullName);
         if (saved.email) setCandidateEmail(saved.email);
@@ -406,12 +453,102 @@ export const App: React.FC = () => {
           }));
         }
       } else if (authUser?.email) {
-        setCandidateName((prev) => prev || authUser.displayName || '');
-        setCandidateEmail((prev) => prev || authUser.email || '');
+        setCandidateName(authUser.displayName || '');
+        setCandidateEmail(authUser.email || '');
+      }
+
+      if (!authUser?.uid) {
+        return;
+      }
+
+      // Fetch tasks belonging exclusively to this logged-in user from Firebase Firestore & Backend DB
+      const [fbTasks, backendRes] = await Promise.all([
+        loadUserFirebaseTasks(authUser.uid),
+        apiFetch(
+          `/api/v1/webchat/state?phoneNumber=${encodeURIComponent(getSessionPhoneNumber(authUser))}&displayName=${encodeURIComponent(authUser.displayName || authUser.email?.split('@')[0] || 'User')}`,
+        ).catch(() => null),
+      ]);
+
+      if (loadToken !== activeLoadToken) return;
+
+      const remoteConvs: ConversationItem[] = fbTasks.map((t) => {
+        const convId = t.conversationId || t.id || `task-${Date.now()}`;
+        const savedMsgs: MessageRecord[] | undefined = Array.isArray(t.messages) && t.messages.length > 0
+          ? t.messages
+          : undefined;
+        return {
+          id: convId,
+          title: t.title || 'Saved Task',
+          agentType: t.agentType || 'SUPERVISOR',
+          lastMessageSnippet:
+            t.lastMessageSnippet ||
+            (savedMsgs?.[savedMsgs.length - 1]?.content?.slice(0, 80) ||
+              (t.status === 'SUBMITTED' ? 'Submitted applications' : 'Saved task')),
+          updatedAt: t.updatedAt ? new Date(t.updatedAt).toLocaleDateString() : 'Synced',
+          messages: savedMsgs,
+          tasks: Array.isArray(t.targets)
+            ? t.targets.map((s: any, idx: number) => ({
+                id: s.receiptId || `sub-${idx}`,
+                targetName: s.targetName || s.name || 'Target',
+                category: s.category || 'Submission',
+                portalUrl: s.portalUrl || '#',
+                contactEmail: s.deliveredToEmail || s.contactEmail,
+                status: s.status || 'SUBMITTED',
+                receiptId: s.receiptId || `SUB-${idx}`,
+                submittedAt: s.submittedAt || new Date().toISOString(),
+              }))
+            : [],
+        };
+      });
+
+      if (backendRes && backendRes.ok) {
+        try {
+          const backendJson = await backendRes.json();
+          const backendProjects = Array.isArray(backendJson.data?.projects) ? backendJson.data.projects : [];
+          for (const proj of backendProjects) {
+            const pid = proj.id;
+            if (pid && !remoteConvs.some((c) => c.id === pid)) {
+              remoteConvs.push({
+                id: pid,
+                title: proj.title || 'Project Task',
+                agentType: proj.assignedAgent || 'SUPERVISOR',
+                lastMessageSnippet: proj.status || 'Saved in database',
+                updatedAt: proj.updatedAt ? new Date(proj.updatedAt).toLocaleDateString() : 'Synced',
+                tasks: [],
+              });
+            }
+          }
+        } catch {
+          // Ignore backend parse failure; Firestore tasks are already loaded
+        }
+      }
+
+      if (remoteConvs.length > 0) {
+        setConversations((prev) => {
+          const byId = new Map<string, ConversationItem>();
+          for (const r of remoteConvs) {
+            byId.set(r.id, r);
+          }
+          for (const local of prev) {
+            const remote = byId.get(local.id);
+            if (remote) {
+              byId.set(local.id, {
+                ...remote,
+                messages: local.messages && local.messages.length >= (remote.messages?.length || 0)
+                  ? local.messages
+                  : remote.messages,
+                tasks: local.tasks && local.tasks.length >= (remote.tasks?.length || 0)
+                  ? local.tasks
+                  : remote.tasks,
+              });
+            } else {
+              byId.set(local.id, local);
+            }
+          }
+          return Array.from(byId.values());
+        });
       }
     };
-
-    hydrateSavedForm('guest-user', null);
 
     const unsubscribe = subscribeToAuthChanges((user) => {
       setCurrentUser(user);
@@ -419,15 +556,16 @@ export const App: React.FC = () => {
         const name = user.displayName || user.email.split('@')[0];
         setDocFounder(name);
       }
-      hydrateSavedForm(user?.uid || 'guest-user', user);
+      void hydrateForUser(user);
     });
     return () => unsubscribe();
   }, []);
 
-  // Persist conversations to localStorage
+  // Persist conversations strictly under the active user's storage key
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(conversations));
+      const storageKey = getConversationsStorageKey(currentStorageUidRef.current);
+      localStorage.setItem(storageKey, JSON.stringify(conversations));
     } catch (err) {
       console.warn('Could not persist conversations:', err);
     }
@@ -441,6 +579,10 @@ export const App: React.FC = () => {
 
   const resolveApiUrl = (url?: string): string => {
     if (!url) return '';
+    if (/^https?:\/\/(127\.0\.0\.1|localhost):3000/i.test(url)) {
+      const relative = url.replace(/^https?:\/\/(127\.0\.0\.1|localhost):3000/i, '');
+      return API_BASE_URL ? `${API_BASE_URL}${relative}` : url;
+    }
     if (/^https?:\/\//i.test(url)) return url;
     if (API_BASE_URL) {
       return `${API_BASE_URL}${url.startsWith('/') ? url : `/${url}`}`;
@@ -777,17 +919,45 @@ export const App: React.FC = () => {
     loadConversationMessages();
   }, [activeConvId]);
 
-  // Keep each task's messages persisted in localStorage so clicking sidebar tasks always restores them
+  // Keep each task's messages persisted in localStorage AND synced to Firestore for the signed-in user
   useEffect(() => {
     if (!activeConvId || messages.length === 0) return;
+    let updatedConv: ConversationItem | undefined;
     setConversations((prev) =>
-      prev.map((c) =>
-        c.id === activeConvId && c.messages !== messages
-          ? { ...c, messages }
-          : c,
-      ),
+      prev.map((c) => {
+        if (c.id === activeConvId && c.messages !== messages) {
+          updatedConv = {
+            ...c,
+            messages,
+            lastMessageSnippet: messages[messages.length - 1]?.content?.slice(0, 80) || c.lastMessageSnippet,
+          };
+          return updatedConv;
+        }
+        return c;
+      }),
     );
-  }, [messages, activeConvId]);
+
+    if (!currentUser?.uid) return;
+    const uid = currentUser.uid;
+    const convId = activeConvId;
+    const timer = setTimeout(() => {
+      const targetConv = updatedConv || conversations.find((c) => c.id === convId);
+      if (!targetConv) return;
+      createFirebaseTask({
+        id: convId,
+        userId: uid,
+        conversationId: convId,
+        title: targetConv.title,
+        agentType: targetConv.agentType,
+        status: targetConv.tasks.length > 0 ? 'SUBMITTED' : 'IN_PROGRESS',
+        lastMessageSnippet: messages[messages.length - 1]?.content?.slice(0, 80) || targetConv.lastMessageSnippet,
+        messages: messages.slice(-40),
+        targets: targetConv.tasks,
+        updatedAt: new Date().toISOString(),
+      }).catch(() => undefined);
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [messages, activeConvId, currentUser?.uid]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -825,8 +995,42 @@ export const App: React.FC = () => {
     }
   };
 
+  const resetUserScopedUiState = () => {
+    setActiveConvId(null);
+    setMessages([]);
+    setPreviewPdfDoc(null);
+    setShowTasksDrawer(false);
+    setActivePrereqTask(null);
+    setWalletBalanceDollars('5.00');
+    setCandidateName('');
+    setCandidateEmail('');
+    setCandidatePhone('');
+    setCandidateRole('');
+    setCandidateLocation('');
+    setCandidatePortfolio('');
+    setCandidateNotes('');
+    setUploadedCvFile(null);
+    setDocCompany('');
+    setDocFounder('');
+    setPrereqFields({
+      nationality: '',
+      relocationPurpose: 'Skilled Work / Visa Sponsorship',
+      companyName: '',
+      industry: '',
+      fundingStage: 'Pre-Seed / Seed',
+      targetRaise: '$250,000',
+      websiteUrl: '',
+      studyLevel: "Master's Degree",
+      fieldOfStudy: '',
+      draftingNotes: '',
+    });
+  };
+
   const handleLogout = async () => {
     await logoutUser();
+    currentStorageUidRef.current = null;
+    resetUserScopedUiState();
+    setConversations(loadSavedConversations(null));
   };
 
   // Start new clean conversation
@@ -1757,7 +1961,8 @@ export const App: React.FC = () => {
                     setConversations([]);
                     setActiveConvId(null);
                     setMessages([]);
-                    localStorage.removeItem(STORAGE_KEY);
+                    localStorage.removeItem(getConversationsStorageKey(currentUser?.uid));
+                    localStorage.removeItem(LEGACY_STORAGE_KEY);
                     localStorage.removeItem('nexora_user_conversations');
                     localStorage.removeItem('nexora_user_conversations_v2');
                     clearUserFirestoreData(currentUser?.uid || 'guest-user');
@@ -3527,12 +3732,38 @@ export const App: React.FC = () => {
 
             <div className="pdf-review-split" style={{ flex: 1, display: 'grid', gridTemplateColumns: '1.35fr 0.85fr', minHeight: 0 }}>
               {/* Left: Live Embedded PDF Viewer */}
-              <div style={{ background: '#0f172a', borderRight: '1px solid #2a2a2a', height: '100%' }}>
-                <iframe
-                  src={resolveApiUrl(previewPdfDoc.downloadUrl)}
-                  title={previewPdfDoc.fileName}
-                  style={{ width: '100%', height: '100%', border: 'none' }}
-                />
+              <div style={{ background: '#0f172a', borderRight: '1px solid #2a2a2a', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                {pdfPreviewLoading ? (
+                  <div style={{ textAlign: 'center', color: '#94a3b8', padding: '24px' }}>
+                    <div className="text-sm font-medium text-white mb-1">Loading PDF preview...</div>
+                    <div className="text-xs">{previewPdfDoc.fileName}</div>
+                  </div>
+                ) : pdfPreviewError || !pdfPreviewBlobUrl ? (
+                  <div style={{ textAlign: 'center', color: '#94a3b8', padding: '24px', maxWidth: '360px' }}>
+                    <div className="text-sm font-semibold text-amber-300 mb-2">
+                      Could not render inline preview{pdfPreviewError ? ` (${pdfPreviewError})` : ''}
+                    </div>
+                    <div className="text-xs text-slate-400 mb-4">
+                      You can still open or download the document directly below.
+                    </div>
+                    <a
+                      href={resolveApiUrl(previewPdfDoc.downloadUrl)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="chat-action-btn"
+                      style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Open PDF in New Tab</span>
+                    </a>
+                  </div>
+                ) : (
+                  <iframe
+                    src={pdfPreviewBlobUrl}
+                    title={previewPdfDoc.fileName}
+                    style={{ width: '100%', height: '100%', border: 'none' }}
+                  />
+                )}
               </div>
 
               {/* Right: Reference Edit Prompt & Approval Controls */}

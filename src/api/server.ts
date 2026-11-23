@@ -102,6 +102,7 @@ export async function buildApiServer(deps: ApiServerDependencies): Promise<Fasti
   await app.register(helmet, {
     contentSecurityPolicy: false,
     crossOriginResourcePolicy: { policy: 'cross-origin' },
+    xFrameOptions: false,
   });
   await app.register(cors, { origin: true });
   await app.register(rateLimit, {
@@ -1030,6 +1031,7 @@ export async function buildApiServer(deps: ApiServerDependencies): Promise<Fasti
     reply.header('Content-Type', 'application/pdf');
     reply.header('Content-Disposition', `inline; filename="${safeName}"`);
     reply.header('Cross-Origin-Resource-Policy', 'cross-origin');
+    reply.header('Content-Security-Policy', 'frame-ancestors *');
     return reply.send(buffer);
   });
 

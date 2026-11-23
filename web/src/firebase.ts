@@ -60,6 +60,8 @@ export interface FirebaseTaskRecord {
   title: string;
   agentType: string;
   status: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'SUBMITTED';
+  lastMessageSnippet?: string;
+  messages?: any[];
   candidate?: CandidateDossier;
   targets?: any[];
   createdAt?: string;
@@ -206,10 +208,16 @@ export async function createFirebaseTask(task: FirebaseTaskRecord): Promise<stri
 }
 
 export async function loadUserFirebaseTasks(userId: string): Promise<FirebaseTaskRecord[]> {
+  if (!userId || userId === 'guest-user') return [];
   try {
     const q = query(collection(db, 'tasks'), where('userId', '==', userId));
     const snap = await getDocs(q);
-    return snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<FirebaseTaskRecord, 'id'>) }));
+    const items = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<FirebaseTaskRecord, 'id'>) }));
+    return items.sort((a, b) => {
+      const ta = typeof a.updatedAt === 'string' ? Date.parse(a.updatedAt) : 0;
+      const tb = typeof b.updatedAt === 'string' ? Date.parse(b.updatedAt) : 0;
+      return (Number.isNaN(tb) ? 0 : tb) - (Number.isNaN(ta) ? 0 : ta);
+    });
   } catch (err) {
     console.error('Could not load tasks from Firestore:', err);
     return [];
