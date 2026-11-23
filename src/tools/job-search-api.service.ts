@@ -74,6 +74,15 @@ const AGGREGATOR_AND_NOISE_DOMAINS = [
   'bing.com',
   'microsoft.com',
   'schema.org',
+  'merriam-webster.com',
+  'm-w.com',
+  'dictionary.com',
+  'wikipedia.org',
+  'gmail.com',
+  'yahoo.com',
+  'hotmail.com',
+  'outlook.com',
+  'icloud.com',
   'w3.org',
   'googleapis.com',
   'cloudflare.com',
@@ -98,9 +107,34 @@ function isValidCompanyEmail(email?: string): email is string {
   if (/^(noreply|no-reply|donotreply|mailer-daemon|postmaster|support@|privacy@|legal@|dmca@|your\.|email@|user@|name@|test@|example\.|sample\.|demo\.)/i.test(clean)) {
     return false;
   }
+  if (/^[a-f0-9]{16,}@/i.test(clean) || /bug-report/i.test(clean)) {
+    return false;
+  }
   const domain = clean.split('@')[1] || '';
   if (isAggregatorOrNoiseHost(domain)) return false;
   return true;
+}
+
+function getBingMarketParams(targetCountry?: string): string {
+  const c = (targetCountry || '').toLowerCase();
+  if (c.includes('south africa')) return '&mkt=en-ZA&cc=za';
+  if (c.includes('uk') || c.includes('united kingdom')) return '&mkt=en-GB&cc=gb';
+  if (c.includes('canada')) return '&mkt=en-CA&cc=ca';
+  if (c.includes('germany')) return '&mkt=de-DE&cc=de';
+  if (c.includes('usa') || c.includes('united states')) return '&mkt=en-US&cc=us';
+  return '';
+}
+
+function domainMatchesCompany(hostOrEmail: string, companyName: string): boolean {
+  const cleanHost = hostOrEmail.toLowerCase().replace(/^.*@/, '').replace(/^www\./, '');
+  const stopWords = new Set(['ltd', 'pty', 'inc', 'llc', 'group', 'company', 'services', 'solutions', 'southern', 'africa', 'south', 'global', 'consulting', 'consultants', 'limited']);
+  const tokens = companyName
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((t) => t.length >= 3 && !stopWords.has(t));
+  if (tokens.length === 0) return true;
+  return tokens.some((t) => cleanHost.includes(t));
 }
 
 function extractEmailFromText(text: string): string | undefined {
@@ -588,23 +622,21 @@ export class JobSearchApiService {
     targetCountry?: string,
   ): Promise<{ email?: string; websiteUrl?: string } | null> {
     try {
-      const q = `"${companyName}" ${targetCountry || ''} email OR careers OR contact`;
-      const bingUrl = `https://www.bing.com/search?q=${encodeURIComponent(q)}`;
+      const mkt = getBingMarketParams(targetCountry);
+      const q = `"${companyName}" ${targetCountry || ''} official website contact email`;
+      const bingUrl = `https://www.bing.com/search?q=${encodeURIComponent(q)}${mkt}`;
       const searchPage = await fetchHtmlQuick(bingUrl, 4500);
       if (!searchPage) return null;
 
-      const snippetEmail = extractEmailFromText(stripHtml(searchPage.html));
-      const bingLinks = extractBingResults(searchPage.html).map((r) => r.url);
-
-      if (snippetEmail) {
-        return { email: snippetEmail, websiteUrl: bingLinks[0] };
-      }
+      const bingLinks = extractBingResults(searchPage.html)
+        .map((r) => r.url)
+        .filter((u) => domainMatchesCompany(u, companyName));
 
       for (const siteUrl of bingLinks.slice(0, 2)) {
         const page = await fetchHtmlQuick(siteUrl, 4000);
         if (!page) continue;
         const found = extractEmailFromText(page.html) || extractEmailFromText(stripHtml(page.html));
-        if (found) {
+        if (found && domainMatchesCompany(found, companyName)) {
           return { email: found, websiteUrl: page.finalUrl };
         }
         try {
@@ -614,7 +646,7 @@ export class JobSearchApiService {
             if (!subPage) continue;
             const subEmail =
               extractEmailFromText(subPage.html) || extractEmailFromText(stripHtml(subPage.html));
-            if (subEmail) {
+            if (subEmail && domainMatchesCompany(subEmail, companyName)) {
               return { email: subEmail, websiteUrl: page.finalUrl };
             }
           }
@@ -637,8 +669,10 @@ export class JobSearchApiService {
   ): Promise<{ source: string; items: Array<Omit<JobApiListing, 'matchScore'>> }> {
     try {
       const country = query.targetCountry || '';
-      const q = `${query.role} company ${country} email contact`;
-      const bingUrl = `https://www.bing.com/search?q=${encodeURIComponent(q)}`;
+      const mkt = getBingMarketParams(country);
+      const siteHint = country.toLowerCase().includes('south africa') ? 'site:.co.za ' : '';
+      const q = `${siteHint}"${query.role}" companies ${country} contact email`;
+      const bingUrl = `https://www.bing.com/search?q=${encodeURIComponent(q)}${mkt}`;
       const searchPage = await fetchHtmlQuick(bingUrl, 5000);
       if (!searchPage) return { source: 'company_direct', items: [] };
 
