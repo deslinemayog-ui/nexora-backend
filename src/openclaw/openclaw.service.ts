@@ -227,7 +227,7 @@ export class OpenClawService {
                   temperature: 0.4,
                   max_tokens: 2500,
                 }),
-                signal: AbortSignal.timeout(75000),
+                signal: AbortSignal.timeout(160000),
               });
 
               if (nimRes.ok) {
@@ -351,6 +351,7 @@ export class OpenClawService {
         const candidateName = nameMatch?.[1]?.trim() || 'Candidate';
 
         const hasDetailedCvInput =
+          !/\b(?:doesn't\s+have\s+a\s+cv|does\s+not\s+have\s+a\s+cv|don't\s+have\s+a\s+cv|no\s+cv|without\s+a\s+cv|interview\s+me)\b/i.test(lower) &&
           /\b(?:experience|worked\s+at|skills|education|diploma|degree|@)\b/i.test(lower) &&
           rawMsg.length > 100;
 
