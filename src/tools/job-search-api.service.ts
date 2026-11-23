@@ -3,14 +3,14 @@ import { logger } from '../utils/logger';
 export interface JobApiListing {
   id: string;
   source:
-    | 'indeed_jsearch'
-    | 'indeed_publisher'
-    | 'adzuna'
-    | 'remotive'
-    | 'arbeitnow'
-    | 'jobicy'
-    | 'themuse'
-    | 'company_direct';
+  | 'indeed_jsearch'
+  | 'indeed_publisher'
+  | 'adzuna'
+  | 'remotive'
+  | 'arbeitnow'
+  | 'jobicy'
+  | 'themuse'
+  | 'company_direct';
   title: string;
   company: string;
   location: string;
@@ -65,24 +65,7 @@ const AGGREGATOR_AND_NOISE_DOMAINS = [
   'sentry.io',
   'wixpress.com',
   'example.com',
-  'email.com',
-  'domain.com',
-  'yourdomain.com',
-  'yourcompany.com',
-  'placeholder.com',
-  'acme.com',
-  'bing.com',
-  'microsoft.com',
   'schema.org',
-  'merriam-webster.com',
-  'm-w.com',
-  'dictionary.com',
-  'wikipedia.org',
-  'gmail.com',
-  'yahoo.com',
-  'hotmail.com',
-  'outlook.com',
-  'icloud.com',
   'w3.org',
   'googleapis.com',
   'cloudflare.com',
@@ -104,10 +87,7 @@ export function isValidCompanyEmail(email?: string): email is string {
   const clean = email.trim().toLowerCase();
   if (!/^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/.test(clean)) return false;
   if (/\.(png|jpg|jpeg|gif|svg|webp|css|js)$/i.test(clean)) return false;
-  if (/^(noreply|no-reply|donotreply|mailer-daemon|postmaster|support@|privacy@|legal@|dmca@|your\.|email@|user@|name@|test@|example\.|sample\.|demo\.)/i.test(clean)) {
-    return false;
-  }
-  if (/^[a-f0-9]{16,}@/i.test(clean) || /bug-report/i.test(clean)) {
+  if (/^(noreply|no-reply|donotreply|mailer-daemon|postmaster|support@|privacy@|legal@|dmca@)/i.test(clean)) {
     return false;
   }
   const domain = clean.split('@')[1] || '';
@@ -152,6 +132,19 @@ export function extractEmailFromText(text: string): string | undefined {
     /^(careers|jobs|hr|recruitment|recruit|talent|hiring|apply|info|contact|admin|enquiries|hello)@/i.test(e),
   );
   return preferred || candidates[0];
+}
+
+function unwrapDuckDuckGoUrl(rawHref: string): string {
+  try {
+    if (rawHref.includes('uddg=')) {
+      const u = new URL(rawHref.startsWith('http') ? rawHref : `https://duckduckgo.com${rawHref}`);
+      const target = u.searchParams.get('uddg');
+      if (target && target.startsWith('http')) return target;
+    }
+  } catch {
+    // ignore
+  }
+  return rawHref;
 }
 
 function decodeSearchResultUrl(rawHref: string): string {
@@ -622,23 +615,28 @@ export class JobSearchApiService {
     targetCountry?: string,
   ): Promise<{ email?: string; websiteUrl?: string } | null> {
     try {
-      const mkt = getBingMarketParams(targetCountry);
-      const q = `"${companyName}" ${targetCountry || ''} official website contact email`;
-      const bingUrl = `https://www.bing.com/search?q=${encodeURIComponent(q)}${mkt}`;
-      const searchPage = await fetchHtmlQuick(bingUrl, 4500);
-      if (!searchPage) return null;
+      const q = `"${companyName}" ${targetCountry || ''} email OR careers OR contact`;
+      const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`;
+      const ddg = await fetchHtmlQuick(ddgUrl, 4500);
+      if (!ddg) return null;
 
-      const bingLinks = extractBingResults(searchPage.html)
-        .map((r) => r.url)
-        .filter((u) => domainMatchesCompany(u, companyName));
+      const snippetEmail = extractEmailFromText(stripHtml(ddg.html));
+      const links = [...ddg.html.matchAll(/class="result__a"[^>]*href="([^"]+)"/gi)]
+        .map((m) => unwrapDuckDuckGoUrl(m[1]))
+        .filter((u) => u.startsWith('http') && !isAggregatorOrNoiseHost(u));
 
-      for (const siteUrl of bingLinks.slice(0, 2)) {
+      if (snippetEmail) {
+        return { email: snippetEmail, websiteUrl: links[0] };
+      }
+
+      for (const siteUrl of links.slice(0, 2)) {
         const page = await fetchHtmlQuick(siteUrl, 4000);
         if (!page) continue;
         const found = extractEmailFromText(page.html) || extractEmailFromText(stripHtml(page.html));
-        if (found && domainMatchesCompany(found, companyName)) {
+        if (found) {
           return { email: found, websiteUrl: page.finalUrl };
         }
+        // Try /contact or /careers on the same origin
         try {
           const origin = new URL(page.finalUrl).origin;
           for (const sub of ['/contact', '/contact-us', '/careers']) {
@@ -646,7 +644,7 @@ export class JobSearchApiService {
             if (!subPage) continue;
             const subEmail =
               extractEmailFromText(subPage.html) || extractEmailFromText(stripHtml(subPage.html));
-            if (subEmail && domainMatchesCompany(subEmail, companyName)) {
+            if (subEmail) {
               return { email: subEmail, websiteUrl: page.finalUrl };
             }
           }
@@ -661,7 +659,7 @@ export class JobSearchApiService {
   }
 
   /**
-   * Discovers real hiring companies in the user's industry & location directly via Bing web search
+   * Discovers real hiring companies in the user's industry & location directly via web search
    * (e.g. cleaning companies, construction firms, banks, telecoms) and scrapes their real emails.
    */
   private async fetchDirectIndustryCompanies(
@@ -669,14 +667,30 @@ export class JobSearchApiService {
   ): Promise<{ source: string; items: Array<Omit<JobApiListing, 'matchScore'>> }> {
     try {
       const country = query.targetCountry || '';
-      const mkt = getBingMarketParams(country);
-      const siteHint = country.toLowerCase().includes('south africa') ? 'site:.co.za ' : '';
-      const q = `${siteHint}"${query.role}" companies ${country} contact email`;
-      const bingUrl = `https://www.bing.com/search?q=${encodeURIComponent(q)}${mkt}`;
-      const searchPage = await fetchHtmlQuick(bingUrl, 5000);
-      if (!searchPage) return { source: 'company_direct', items: [] };
+      const q = `${query.role} company ${country} ("info@" OR "careers@" OR "hr@")`;
+      const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`;
+      const ddg = await fetchHtmlQuick(ddgUrl, 5000);
+      if (!ddg) return { source: 'company_direct', items: [] };
 
-      const targets = extractBingResults(searchPage.html).slice(0, 6);
+      const linkMatches = [
+        ...ddg.html.matchAll(/class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi),
+      ];
+
+      const targets: Array<{ url: string; title: string }> = [];
+      const seenHosts = new Set<string>();
+      for (const m of linkMatches) {
+        const url = unwrapDuckDuckGoUrl(m[1]);
+        if (!url.startsWith('http') || isAggregatorOrNoiseHost(url)) continue;
+        try {
+          const host = new URL(url).hostname.replace(/^www\./, '');
+          if (seenHosts.has(host)) continue;
+          seenHosts.add(host);
+          targets.push({ url, title: stripHtml(m[2]) });
+          if (targets.length >= 6) break;
+        } catch {
+          // ignore
+        }
+      }
 
       const settled = await Promise.allSettled(
         targets.map(async (t, idx) => {

@@ -168,8 +168,13 @@ export const buildApplicationEmailHtml = (
     }
     </div>
 
-    <div style="background-color: #f8fafc; border-top: 1px solid #e2e8f0; padding: 14px 28px; font-size: 12px; color: #64748b; text-align: center;">
-      Prepared and submitted via <strong>Nexora AI</strong> on behalf of ${escapeHtml(payload.applicantName)}.
+    <div style="background-color: #f8fafc; border-top: 1px solid #e2e8f0; padding: 18px 28px; font-size: 12px; color: #475569; text-align: center;">
+      <p style="margin: 0 0 10px 0;">Prepared and submitted via <strong>Nexora AI</strong> on behalf of ${escapeHtml(payload.applicantName)}.</p>
+      <div style="margin-top: 10px; padding: 12px 16px; border-radius: 8px; background-color: #eef2ff; border: 1px solid #c7d2fe; color: #1e293b;">
+        <strong style="color: #3730a3;">Hiring, Recruiting, or Offering Opportunities?</strong><br/>
+        Join <strong>Nexora AI</strong> to receive AI-scored CVs (0–100%), verified candidate assessment transcripts, and schedule interviews in one click.<br/>
+        <a href="${escapeHtml(process.env.PUBLIC_WEB_URL || 'https://nexora.empirelabs.digital')}/company/register" style="display: inline-block; margin-top: 8px; padding: 7px 14px; border-radius: 6px; background-color: #4f46e5; color: #ffffff; text-decoration: none; font-weight: 700; font-size: 11.5px;">Create Your Free Company Portal</a>
+      </div>
     </div>
   </div>
 </body>

@@ -103,6 +103,77 @@ export class PaystackService {
     const { currency, amountSubunits } = this.computePaystackChargeAmount(pkg.creditCents);
     const reference = `NEXORA-${params.customerId.slice(0, 8).toUpperCase()}-${Date.now()}`;
 
+    const init = await this.postInitialize({
+      email: params.email,
+      amountSubunits,
+      currency,
+      reference,
+      callbackUrl: params.callbackUrl,
+      metadata: {
+        customerId: params.customerId,
+        packageId: pkg.id,
+        creditCents: pkg.creditCents,
+      },
+    });
+
+    return {
+      ...init,
+      creditCents: pkg.creditCents,
+    };
+  }
+
+  public async initializeInvoicePayment(params: {
+    invoiceId: string;
+    organisationId: string;
+    email: string;
+    amountCentsUsd: number;
+    callbackUrl?: string;
+  }): Promise<{
+    authorizationUrl: string;
+    accessCode: string;
+    reference: string;
+    currency: string;
+    amountSubunits: number;
+  }> {
+    const { currency, amountSubunits } = this.computePaystackChargeAmount(
+      Math.max(100, params.amountCentsUsd),
+    );
+    const reference = `NEXORA-INV-${params.invoiceId.slice(-6).toUpperCase()}-${Date.now()}`;
+    return this.postInitialize({
+      email: params.email,
+      amountSubunits,
+      currency,
+      reference,
+      callbackUrl: params.callbackUrl,
+      metadata: {
+        type: 'COMPANY_MONTHLY_INVOICE',
+        invoiceId: params.invoiceId,
+        organisationId: params.organisationId,
+        amountCentsUsd: params.amountCentsUsd,
+      },
+    });
+  }
+
+  private async postInitialize(params: {
+    email: string;
+    amountSubunits: number;
+    currency: string;
+    reference: string;
+    callbackUrl?: string;
+    metadata: Record<string, unknown>;
+  }): Promise<{
+    authorizationUrl: string;
+    accessCode: string;
+    reference: string;
+    currency: string;
+    amountSubunits: number;
+  }> {
+    if (!this.secretKey) {
+      throw new Error(
+        'PAYSTACK_SECRET_KEY is not configured in .env. Add your Paystack secret key (sk_test_... or sk_live_...) to enable checkout.',
+      );
+    }
+
     const res = await fetch('https://api.paystack.co/transaction/initialize', {
       method: 'POST',
       headers: {
@@ -111,15 +182,11 @@ export class PaystackService {
       },
       body: JSON.stringify({
         email: params.email,
-        amount: amountSubunits,
-        currency,
-        reference,
+        amount: params.amountSubunits,
+        currency: params.currency,
+        reference: params.reference,
         callback_url: params.callbackUrl,
-        metadata: {
-          customerId: params.customerId,
-          packageId: pkg.id,
-          creditCents: pkg.creditCents,
-        },
+        metadata: params.metadata,
       }),
       signal: AbortSignal.timeout(8000),
     });
@@ -139,9 +206,8 @@ export class PaystackService {
       authorizationUrl: json.data.authorization_url,
       accessCode: json.data.access_code,
       reference: json.data.reference,
-      currency,
-      amountSubunits,
-      creditCents: pkg.creditCents,
+      currency: params.currency,
+      amountSubunits: params.amountSubunits,
     };
   }
 

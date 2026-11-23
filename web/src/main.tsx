@@ -3,6 +3,8 @@ import ReactDOM from 'react-dom/client';
 import { App } from './App';
 import { LandingPage } from './pages/LandingPage';
 import { LegalPage } from './pages/LegalPages';
+import { CompanyPortal } from './pages/CompanyPortal';
+import { PublicVacancyPage } from './pages/PublicVacancyPage';
 import './styles.css';
 
 const RootRouter: React.FC = () => {
@@ -30,6 +32,13 @@ const RootRouter: React.FC = () => {
 
   if (normalized === '/app' || normalized.startsWith('/app/') || hasPaystackRef) {
     return <App />;
+  }
+  if (normalized.startsWith('/company') || normalized.startsWith('/agent')) {
+    return <CompanyPortal pathname={normalized} onNavigate={navigate} />;
+  }
+  if (normalized.startsWith('/opportunity/')) {
+    const vacancyId = normalized.replace('/opportunity/', '').split('/')[0] || '';
+    return <PublicVacancyPage vacancyId={vacancyId} onNavigate={navigate} />;
   }
   if (normalized === '/privacy' || normalized === '/privacy-policy') {
     return <LegalPage mode="privacy" onNavigate={navigate} />;

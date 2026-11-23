@@ -1091,6 +1091,150 @@ export class DocumentGeneratorService {
     }
   }
 
+  public async generateAssessmentTranscriptPdf(params: {
+    candidateName: string;
+    candidateEmail?: string;
+    cvFileName?: string;
+    assignmentTitle: string;
+    category: string;
+    totalQuestions: number;
+    correctCount: number;
+    percentageScore: number;
+    passed: boolean;
+    totalDurationSec: number;
+    topicBreakdown: Record<string, { correct: number; total: number }>;
+    difficultyBreakdown: Record<string, { correct: number; total: number }>;
+    aiPerformanceSummary: string;
+    submittedAt: string;
+    questionDetails: Array<{
+      order: number;
+      topic: string;
+      difficulty: string;
+      statement: string;
+      selectedAnswer: string;
+      correctAnswer: string;
+      isCorrect: boolean;
+      timeSpentSec: number;
+    }>;
+  }): Promise<GeneratedDocumentResult> {
+    const safeSlug = params.candidateName.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'candidate';
+    const fileName = `transcript_${safeSlug}_${Date.now()}.pdf`;
+    const topicRows = Object.entries(params.topicBreakdown)
+      .map(
+        ([topic, s]) =>
+          `<tr><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;">${this.escapeHtml(topic)}</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;text-align:right;font-weight:700;">${s.correct}/${s.total} (${s.total ? Math.round((s.correct / s.total) * 100) : 0}%)</td></tr>`,
+      )
+      .join('');
+    const diffRows = Object.entries(params.difficultyBreakdown)
+      .map(
+        ([lvl, s]) =>
+          `<tr><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;">${this.escapeHtml(lvl)}</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;text-align:right;font-weight:700;">${s.correct}/${s.total}</td></tr>`,
+      )
+      .join('');
+    const qRows = params.questionDetails
+      .map(
+        (q) => `
+          <div style="margin-bottom:10px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:8px;page-break-inside:avoid;">
+            <div style="display:flex;justify-content:space-between;font-size:10px;color:#475569;margin-bottom:4px;">
+              <span><strong>Q${q.order}</strong> • ${this.escapeHtml(q.topic)} • ${this.escapeHtml(q.difficulty)}</span>
+              <span style="font-weight:700;color:${q.isCorrect ? '#059669' : '#dc2626'};">${q.isCorrect ? 'CORRECT' : 'INCORRECT'} (${q.timeSpentSec}s)</span>
+            </div>
+            <div style="font-size:11.5px;font-weight:600;color:#0f172a;margin-bottom:4px;">${this.escapeHtml(q.statement)}</div>
+            <div style="font-size:10.5px;color:#334155;">Selected: <strong>${this.escapeHtml(q.selectedAnswer)}</strong>${q.isCorrect ? '' : ` • Correct: <strong>${this.escapeHtml(q.correctAnswer)}</strong>`}</div>
+          </div>`,
+      )
+      .join('');
+
+    const html = `<!DOCTYPE html>
+<html><head><meta charset="utf-8" />
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800&display=swap" rel="stylesheet" />
+<style>body{font-family:'Montserrat',Arial,sans-serif;color:#0f172a;margin:0;padding:0;line-height:1.5;}</style>
+</head><body>
+  <div style="background:linear-gradient(135deg,#0f172a,#1e3a8a);color:#fff;padding:20px 24px;border-radius:10px;margin-bottom:16px;">
+    <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:#38bdf8;font-weight:700;">Official Candidate Assessment Transcript</div>
+    <h1 style="margin:4px 0 0 0;font-size:20px;">${this.escapeHtml(params.assignmentTitle)}</h1>
+    <div style="font-size:11.5px;color:#cbd5e1;margin-top:4px;">Candidate: <strong>${this.escapeHtml(params.candidateName)}</strong>${params.candidateEmail ? ` (${this.escapeHtml(params.candidateEmail)})` : ''} • Category: ${this.escapeHtml(params.category)}</div>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px;">
+    <div style="padding:10px;border:1px solid #cbd5e1;border-radius:8px;text-align:center;"><div style="font-size:10px;color:#64748b;">Score</div><div style="font-size:18px;font-weight:800;color:${params.passed ? '#059669' : '#dc2626'};">${params.percentageScore.toFixed(1)}%</div></div>
+    <div style="padding:10px;border:1px solid #cbd5e1;border-radius:8px;text-align:center;"><div style="font-size:10px;color:#64748b;">Status</div><div style="font-size:16px;font-weight:800;color:${params.passed ? '#059669' : '#dc2626'};">${params.passed ? 'PASSED' : 'FAILED'}</div></div>
+    <div style="padding:10px;border:1px solid #cbd5e1;border-radius:8px;text-align:center;"><div style="font-size:10px;color:#64748b;">Correct</div><div style="font-size:16px;font-weight:800;">${params.correctCount}/${params.totalQuestions}</div></div>
+    <div style="padding:10px;border:1px solid #cbd5e1;border-radius:8px;text-align:center;"><div style="font-size:10px;color:#64748b;">Duration</div><div style="font-size:16px;font-weight:800;">${Math.floor(params.totalDurationSec / 60)}m ${params.totalDurationSec % 60}s</div></div>
+  </div>
+  <div style="padding:12px 14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:14px;font-size:11.5px;">
+    <strong>Linked CV:</strong> ${this.escapeHtml(params.cvFileName || 'Candidate Profile CV')} • <strong>Submitted:</strong> ${this.escapeHtml(new Date(params.submittedAt).toLocaleString())}<br/>
+    <strong>AI Performance Summary:</strong> ${this.escapeHtml(params.aiPerformanceSummary)}
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
+    <table style="width:100%;border-collapse:collapse;font-size:11px;border:1px solid #e2e8f0;"><thead><tr style="background:#f1f5f9;"><th style="padding:6px 10px;text-align:left;">Topic</th><th style="padding:6px 10px;text-align:right;">Score</th></tr></thead><tbody>${topicRows}</tbody></table>
+    <table style="width:100%;border-collapse:collapse;font-size:11px;border:1px solid #e2e8f0;"><thead><tr style="background:#f1f5f9;"><th style="padding:6px 10px;text-align:left;">Difficulty</th><th style="padding:6px 10px;text-align:right;">Score</th></tr></thead><tbody>${diffRows}</tbody></table>
+  </div>
+  <h3 style="font-size:13px;margin:0 0 8px 0;">Question-by-Question Record</h3>
+  ${qRows}
+</body></html>`;
+
+    return this.renderHtmlToPdf(html, fileName, `Nexora AI Assessment Transcript • ${params.candidateName}`);
+  }
+
+  public async generateMonthlyInvoicePdf(params: {
+    invoiceNumber: string;
+    organisationName: string;
+    billingEmail: string;
+    candidateName: string;
+    vacancyTitle: string;
+    category: string;
+    billingMonth: string;
+    offerAmountUsd: number;
+    feePercent: number;
+    feeAmountUsd: number;
+    status: 'PENDING' | 'PAID';
+  }): Promise<GeneratedDocumentResult> {
+    const safeSlug = params.invoiceNumber.toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+    const fileName = `invoice_${safeSlug}_${Date.now()}.pdf`;
+    const html = `<!doctype html><html><head><meta charset="utf-8" />
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800&display=swap" rel="stylesheet" />
+<style>body{font-family:'Montserrat',Arial,sans-serif;color:#0f172a;margin:0;padding:0;line-height:1.5;}</style>
+</head><body>
+  <div style="background:linear-gradient(135deg,#0f172a,#1e3a8a);color:#fff;padding:24px;border-radius:10px;margin-bottom:20px;display:flex;justify-content:space-between;align-items:center;">
+    <div>
+      <div style="font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:#38bdf8;font-weight:700;">Nexora AI Platform Invoice</div>
+      <h1 style="margin:4px 0 0 0;font-size:22px;">${this.escapeHtml(params.invoiceNumber)}</h1>
+    </div>
+    <div style="text-align:right;">
+      <div style="font-size:12px;color:#cbd5e1;">Billing Month: <strong>${this.escapeHtml(params.billingMonth)}</strong></div>
+      <div style="font-size:13px;font-weight:800;color:${params.status === 'PAID' ? '#6ee7b7' : '#fcd34d'};margin-top:4px;">${params.status}</div>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:20px;font-size:12px;">
+    <div style="padding:12px;border:1px solid #e2e8f0;border-radius:8px;">
+      <div style="font-size:10px;color:#64748b;text-transform:uppercase;">Billed To</div>
+      <div style="font-weight:700;font-size:14px;margin-top:4px;">${this.escapeHtml(params.organisationName)}</div>
+      <div style="color:#475569;">${this.escapeHtml(params.billingEmail)}</div>
+    </div>
+    <div style="padding:12px;border:1px solid #e2e8f0;border-radius:8px;">
+      <div style="font-size:10px;color:#64748b;text-transform:uppercase;">Accepted Candidate</div>
+      <div style="font-weight:700;font-size:14px;margin-top:4px;">${this.escapeHtml(params.candidateName)}</div>
+      <div style="color:#475569;">${this.escapeHtml(params.vacancyTitle)} (${this.escapeHtml(params.category)})</div>
+    </div>
+  </div>
+  <table style="width:100%;border-collapse:collapse;font-size:12px;border:1px solid #e2e8f0;margin-bottom:20px;">
+    <thead><tr style="background:#f1f5f9;"><th style="padding:10px;text-align:left;">Description</th><th style="padding:10px;text-align:right;">Monthly Offer (USD)</th><th style="padding:10px;text-align:right;">Fee Rate</th><th style="padding:10px;text-align:right;">Amount Due (USD)</th></tr></thead>
+    <tbody>
+      <tr>
+        <td style="padding:12px;border-top:1px solid #e2e8f0;">Nexora AI Monthly Platform Fee — Accepted Placement (${this.escapeHtml(params.billingMonth)})</td>
+        <td style="padding:12px;border-top:1px solid #e2e8f0;text-align:right;">$${params.offerAmountUsd.toFixed(2)}</td>
+        <td style="padding:12px;border-top:1px solid #e2e8f0;text-align:right;">${params.feePercent}%</td>
+        <td style="padding:12px;border-top:1px solid #e2e8f0;text-align:right;font-weight:800;">$${params.feeAmountUsd.toFixed(2)}</td>
+      </tr>
+    </tbody>
+  </table>
+  <div style="padding:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;font-size:11.5px;color:#475569;">
+    Pay securely online inside your <strong>Nexora Company Dashboard → Billing &amp; Invoices</strong> via Paystack.
+  </div>
+</body></html>`;
+    return this.renderHtmlToPdf(html, fileName, `Nexora AI Invoice ${params.invoiceNumber}`);
+  }
+
   private escapeHtml(str: string): string {
     return String(str)
       .replace(/&/g, '&amp;')

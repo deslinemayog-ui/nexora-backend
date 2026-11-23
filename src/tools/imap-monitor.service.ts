@@ -110,62 +110,27 @@ export function matchReplyToSubmission(
   const subjectLower = reply.subject.toLowerCase();
   const haystack = `${reply.subject}\n${reply.body}`.toLowerCase();
   const fromEmail = reply.fromAddress.toLowerCase();
-  const fromDomain = fromEmail.split('@')[1] || '';
 
-  // 1. Exact receipt ID match (e.g. SUB-1234ABCD)
+  // 1. Strict REF / Receipt ID match (e.g. SUB-1234ABCD)
   for (const sub of submissions) {
     if (sub.receiptId && haystack.includes(sub.receiptId.toLowerCase())) {
       return sub;
     }
   }
 
-  // 2. Exact targetName substring match in subject (e.g. "Re: ... — 80+ Visa Sponsored Software Jobs in UK...")
-  const exactSubjectMatch = submissions.find(
-    (sub) => sub.targetName && sub.targetName.length >= 6 && subjectLower.includes(sub.targetName.toLowerCase()),
-  );
-  if (exactSubjectMatch) {
-    return exactSubjectMatch;
-  }
-
-  // 3. Best token-overlap score against targetName (prefer subject hits over body hits)
-  const stopWords = new Set([
-    'jobs', 'job', 'careers', 'hiring', 'portal', 'limited', 'group', 'software', 'engineer',
-    'developer', 'visa', 'sponsorship', 'sponsored', 'apply', 'directly', 'with', 'from', '2026', '2025',
-  ]);
-  let bestSub: SubmissionLookupTarget | undefined;
-  let bestScore = 0;
-
-  for (const sub of submissions) {
-    const tokens = sub.targetName
-      .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, ' ')
-      .split(/\s+/)
-      .filter((w) => w.length >= 3 && !stopWords.has(w));
-
-    if (tokens.length === 0) continue;
-
-    let score = 0;
-    for (const token of tokens) {
-      if (subjectLower.includes(token)) score += 3;
-      else if (haystack.includes(token)) score += 1;
-      if (reply.fromName.toLowerCase().includes(token) || (fromDomain && fromDomain.includes(token))) {
-        score += 2;
-      }
-    }
-
-    if (score > bestScore) {
-      bestScore = score;
-      bestSub = sub;
+  // 2. Strict reply subject match: must be a reply ("Re:") and contain the exact targetName
+  if (/^re:/i.test(reply.subject.trim())) {
+    const exactSubjectMatch = submissions.find(
+      (sub) => sub.targetName && sub.targetName.length >= 6 && subjectLower.includes(sub.targetName.toLowerCase()),
+    );
+    if (exactSubjectMatch) {
+      return exactSubjectMatch;
     }
   }
 
-  if (bestSub && bestScore >= 3) {
-    return bestSub;
-  }
-
-  // 4. Exact sender email match ONLY when not a shared test inbox (info@empiredigitals.org)
+  // 3. Exact non-shared sender email match ONLY for actual replies ("Re:")
   const sharedTestEmail = (process.env.TEST_RECIPIENT_EMAIL || 'info@empiredigitals.org').toLowerCase();
-  if (fromEmail && fromEmail !== sharedTestEmail) {
+  if (/^re:/i.test(reply.subject.trim()) && fromEmail && fromEmail !== sharedTestEmail) {
     for (const sub of submissions) {
       const contact = (sub.contactEmail || '').toLowerCase();
       const delivered = (sub.deliveredToEmail || '').toLowerCase();
@@ -239,11 +204,13 @@ function extractReadableTextFromRawEmail(raw: string): string {
     .replace(/&gt;/gi, '>')
     .replace(/\r?\n--[a-zA-Z0-9_=-]+[\s\S]*$/m, '');
 
-  // Strip quoted email reply chains (Zoho "---- On ... wrote", Gmail "On ... wrote:", Outlook "From: ... Sent:")
+  // Strip quoted email reply chains (Zoho, Gmail, Outlook, Apple/Samsung Mail "From: ... Date: ... Subject:")
   text = text
     .replace(/\s*-{2,}\s*On\s+[\s\S]*?\bwrote\b[\s\S]*$/i, '')
+    .replace(/\s*-{2,}\s*Original Message\s*-{2,}[\s\S]*$/i, '')
     .replace(/\s*On\s+(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[\s\S]*?\bwrote:\s*[\s\S]*$/i, '')
-    .replace(/\s*From:\s*[^\n]+\s+Sent:\s*[\s\S]*$/i, '')
+    .replace(/\s*From:\s*[\s\S]*?\b(?:Sent|Date)\s*:\s*[\s\S]*$/i, '')
+    .replace(/\s*Application Submission\s*[•·-]\s*Ref\s+SUB-[\s\S]*$/i, '')
     .replace(/\s*>+\s.*$/gm, '')
     .replace(/=\s*$/, '')
     .replace(/\s+/g, ' ')
@@ -392,8 +359,22 @@ export class ImapMonitorService {
             const rawSource = message.source ? message.source.toString('utf8') : '';
             const body = extractReadableTextFromRawEmail(rawSource);
 
+            // Skip automated newsletters, bulk marketing emails, and Nexora's own outbound dispatches
+            const isNewsletterOrBulk =
+              /(?:no[-_.]?reply|noreply|newsletter|marketing|updates@|hello@ollama\.com)/i.test(fromAddress) ||
+              /\bList-Unsubscribe:/i.test(rawSource.slice(0, 4000)) ||
+              /\b(?:unsubscribe|opted in to receive updates)\b/i.test(body);
+            const isOwnOutbound =
+              (fromAddress && fromAddress.toLowerCase() === imapUser.toLowerCase() && !/^re:/i.test(subject)) ||
+              /^\s*Dear Hiring Team at\b/i.test(body) ||
+              /^\s*Application Submission\s*[•·-]\s*Ref\s+SUB-/i.test(body);
+            if (isNewsletterOrBulk || isOwnOutbound || !body) {
+              continue;
+            }
+
+            // Match against rawSource + subject so stripped SUB-XXXX receipts in quoted threads still match!
             const matched = matchReplyToSubmission(
-              { subject, body, fromAddress, fromName },
+              { subject, body: `${body}\n${rawSource.slice(0, 6000)}`, fromAddress, fromName },
               submissions,
             );
 

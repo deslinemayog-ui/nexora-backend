@@ -1210,9 +1210,13 @@ export class NexoraRepository {
     const notif: Notification = {
       id: crypto.randomUUID(),
       customerId: params.customerId,
+      organisationId: null,
       projectId: params.projectId ?? null,
+      type: 'GENERAL',
       title: params.title,
       message: params.message,
+      actionUrl: null,
+      isRead: false,
       status: params.status ?? NotificationStatus.PENDING,
       sentAt: params.status === NotificationStatus.SENT ? now : null,
       errorMessage: null,

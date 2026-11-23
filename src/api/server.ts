@@ -29,6 +29,7 @@ import { imapMonitorService } from '../tools/imap-monitor.service';
 import { jobSearchApiService } from '../tools/job-search-api.service';
 import { visaRelocationService } from '../tools/visa-relocation.service';
 import { paystackService } from '../tools/paystack.service';
+import { registerPlatformRoutes } from './platform.routes';
 
 export interface ApiServerDependencies {
   repository: NexoraRepository;
@@ -479,6 +480,7 @@ export async function buildApiServer(deps: ApiServerDependencies): Promise<Fasti
         }),
       )
       .optional(),
+    attachedDocumentFileNames: z.array(z.string().min(1)).optional(),
   });
 
     const handleWebChatMessage = async (request: any) => {
@@ -577,6 +579,27 @@ export async function buildApiServer(deps: ApiServerDependencies): Promise<Fasti
           resolvedText = resolvedText
             ? `${resolvedText}\n\n${extractedSnippets.join('\n\n')}`
             : extractedSnippets.join('\n\n');
+        }
+      }
+
+      if (Array.isArray(body.attachedDocumentFileNames) && body.attachedDocumentFileNames.length > 0) {
+        const { customer } = await deps.customerService.resolveCustomerFromWhatsApp({
+          senderNumberOrJid: senderJid,
+          displayName: resolvedDisplayName,
+        });
+        const extraFiles: Array<{ filename: string; path: string }> = [];
+        for (const rawName of body.attachedDocumentFileNames) {
+          const safeName = path.basename(rawName);
+          const primary = path.resolve(process.cwd(), 'node_modules', '.cache', 'nexora-documents', safeName);
+          const fallback = path.resolve(process.cwd(), 'storage', 'documents', safeName);
+          const targetPath = (await fs.stat(primary).then(() => primary).catch(() => null))
+            || (await fs.stat(fallback).then(() => fallback).catch(() => null));
+          if (targetPath) {
+            extraFiles.push({ filename: safeName, path: targetPath });
+          }
+        }
+        if (extraFiles.length > 0) {
+          autonomousWorkerService.registerSessionAttachments(customer.id, extraFiles);
         }
       }
 
@@ -1189,6 +1212,8 @@ export async function buildApiServer(deps: ApiServerDependencies): Promise<Fasti
     reply.header('Content-Security-Policy', 'frame-ancestors *');
     return reply.send(buffer);
   });
+
+  registerPlatformRoutes(app, { openclawService: deps.openclawService });
 
   return app;
 }

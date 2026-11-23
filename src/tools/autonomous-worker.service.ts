@@ -2,6 +2,7 @@ import { execFile } from 'child_process';
 import crypto from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
+import { platformStore } from '../modules/platform/platform.store';
 import { promisify } from 'util';
 import { AgentType } from '@prisma/client';
 import { logger } from '../utils/logger';
@@ -44,6 +45,7 @@ export interface DiscoveredPlatformTarget {
   liveReachable: boolean;
   httpStatus?: number;
   scrapedTitle?: string;
+  nexoraVacancyId?: string;
 }
 
 export interface SubmittedApplicationReceipt {
@@ -477,7 +479,31 @@ export class AutonomousWorkerService {
 
     let generatedDocument: GeneratedDocumentResult | undefined = params.existingDocument;
 
-    if (!generatedDocument && params.agentType === AgentType.JOB_AGENT) {
+    const userProvidedExistingDoc =
+      params.userMessage.includes('[DO_NOT_DRAFT_NEW_DOCUMENT]') ||
+      (/\(Uploaded\)/i.test(params.userMessage) && !/AI to draft on my behalf/i.test(params.userMessage));
+
+    if (!generatedDocument && userProvidedExistingDoc) {
+      const existingAtts = this.sessionAttachments.get(params.customerId) ?? [];
+      if (existingAtts.length > 0) {
+        const primaryAtt = existingAtts[0]!;
+        try {
+          const st = await fs.stat(primaryAtt.path);
+          generatedDocument = {
+            fileName: primaryAtt.filename,
+            filePath: primaryAtt.path,
+            fileSizeBytes: st.size,
+            estimatedPages: 1,
+            downloadUrl: `/api/v1/documents/download/${encodeURIComponent(primaryAtt.filename)}`,
+            createdAt: new Date().toISOString(),
+          };
+        } catch {
+          // ignore stat errors
+        }
+      }
+    }
+
+    if (!generatedDocument && !userProvidedExistingDoc && params.agentType === AgentType.JOB_AGENT) {
       // Check if an [Approved PDF: <fileName>] or [Reference PDF: <fileName>] was passed
       const approvedPdfMatch = params.userMessage.match(/\[(?:Approved|Reference)\s+PDF:\s*([^\]]+)\]/i);
       if (approvedPdfMatch?.[1]) {
@@ -522,7 +548,7 @@ export class AutonomousWorkerService {
       (extractedPhoneMatch?.[1] ? extractedPhoneMatch[1].replace(/\s+/g, '') : '') ||
       cleanParamPhone;
 
-    if (!generatedDocument && params.agentType === AgentType.JOB_AGENT) {
+    if (!generatedDocument && !userProvidedExistingDoc && params.agentType === AgentType.JOB_AGENT) {
       try {
         const joinedText = allTexts.join(' ');
         const roleMatch = joinedText.match(
@@ -568,7 +594,7 @@ export class AutonomousWorkerService {
       } catch (docErr) {
         logger.warn({ err: docErr }, 'Autonomous CV PDF generation skipped');
       }
-    } else if (needsDocument) {
+    } else if (needsDocument && !userProvidedExistingDoc) {
       try {
         generatedDocument = await documentGeneratorService.generateBusinessPlanPdf({
           companyName: params.customerName || 'Client Venture',
@@ -892,8 +918,160 @@ export class AutonomousWorkerService {
         ? Number(process.env.MAX_JOB_EMAILS_PER_RUN || 10)
         : Number(process.env.MAX_SMTP_EMAILS_PER_RUN || 2));
 
-    for (const target of params.discoveredTargets) {
+    // Prioritize Nexora-registered companies/vacancies FIRST ahead of external targets
+    const targetCategory =
+      params.agentType === AgentType.JOB_AGENT
+        ? 'EMPLOYMENT'
+        : params.agentType === AgentType.VISA_AGENT
+          ? 'RELOCATION'
+          : params.agentType === AgentType.EDUCATION_AGENT
+            ? 'SCHOLARSHIP'
+            : params.agentType === AgentType.INVESTOR_AGENT
+              ? 'INVESTMENT'
+              : null;
+
+    const pState = platformStore.getState();
+    const ctxLower = params.allContextText.toLowerCase();
+    const sessionAtts = this.sessionAttachments.get(params.customerId) ?? [];
+    const candidateHasTranscript =
+      pState.transcripts.some(
+        (t) =>
+          t.userUid === params.customerId ||
+          t.customerId === params.customerId ||
+          (params.customerEmail && t.candidateEmail?.toLowerCase() === params.customerEmail.toLowerCase()),
+      ) || sessionAtts.some((a) => /transcript/i.test(a.filename));
+
+    const nexoraTargets: DiscoveredPlatformTarget[] = targetCategory
+      ? pState.vacancies
+          .filter((v) => v.status === 'PUBLISHED' && v.category === targetCategory)
+          .filter((v) => {
+            const org = pState.organisations.find((o) => o.id === v.organisationId);
+            if (org?.requireTranscript && !candidateHasTranscript) {
+              return false;
+            }
+            return true;
+          })
+          .map((v) => {
+            const org = pState.organisations.find((o) => o.id === v.organisationId);
+            const matchScore = [
+              v.title,
+              v.location,
+              ...(v.requiredSkills || []),
+              v.description,
+            ].reduce(
+              (acc, tok) =>
+                acc +
+                (tok && ctxLower.includes(String(tok).toLowerCase()) ? 2 : 0),
+              0,
+            );
+            return {
+              vac: v,
+              org,
+              matchScore,
+            };
+          })
+          .sort((a, b) => b.matchScore - a.matchScore)
+          .map(({ vac, org }) => {
+            const publicUrl = `${process.env.PUBLIC_WEB_URL || 'https://nexora.empirelabs.digital'}/opportunity/${vac.id}`;
+            return {
+              name: `${vac.title} — ${vac.organisationName}`,
+              category: `${vac.category} (Nexora Verified Partner)`,
+              portalUrl: publicUrl,
+              applicationUrl: publicUrl,
+              contactEmail: org?.recruitmentEmail || org?.businessEmail,
+              focusSummary: vac.description.slice(0, 180),
+              checkSizeOrBenefit: vac.salaryRange || vac.location,
+              liveReachable: true,
+              httpStatus: 200,
+              scrapedTitle: vac.title,
+              nexoraVacancyId: vac.id,
+            };
+          })
+      : [];
+
+    const prioritizedTargets = [...nexoraTargets, ...params.discoveredTargets].slice(
+      0,
+      Math.max(maxSmtpEmailsPerRun, params.discoveredTargets.length),
+    );
+
+    for (const target of prioritizedTargets) {
       const receiptId = `SUB-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+
+      // If this is a Nexora-hosted company vacancy, record the application directly on the Company Dashboard
+      if (target.nexoraVacancyId) {
+        const vac = pState.vacancies.find((v) => v.id === target.nexoraVacancyId);
+        if (vac) {
+          const alreadyApplied = pState.applications.some(
+            (a) =>
+              a.vacancyId === vac.id &&
+              a.candidateEmail.toLowerCase() === (params.customerEmail || '').toLowerCase(),
+          );
+          if (!alreadyApplied) {
+            const nowIso = new Date().toISOString();
+            const ctxEmailMatch = params.allContextText.match(
+              /\b([a-zA-Z0-9._%+-]+@(?!nexora\.ai\b|example\.com\b)[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\b/i,
+            );
+            const realEmail =
+              (params.customerEmail && !/^(client|candidate)@nexora\.ai$/i.test(params.customerEmail)
+                ? params.customerEmail
+                : '') ||
+              ctxEmailMatch?.[1] ||
+              'candidate@nexora.ai';
+            const matchedTranscript = pState.transcripts.find(
+              (t) =>
+                t.userUid === params.customerId ||
+                t.customerId === params.customerId ||
+                (realEmail && t.candidateEmail?.toLowerCase() === realEmail.toLowerCase()),
+            );
+            pState.applications.unshift({
+              id: `app-${crypto.randomUUID().slice(0, 10)}`,
+              referenceCode: receiptId,
+              vacancyId: vac.id,
+              vacancyTitle: vac.title,
+              organisationId: vac.organisationId,
+              organisationName: vac.organisationName,
+              customerId: params.customerId,
+              userUid: params.customerId,
+              candidateName: effectiveApplicantName,
+              candidateEmail: realEmail,
+              candidatePhone: params.customerPhone,
+              cvFileName: params.generatedDocument?.fileName,
+              cvDownloadUrl: params.generatedDocument?.downloadUrl,
+              transcriptId: matchedTranscript?.id,
+              transcriptScore: matchedTranscript?.percentageScore,
+              transcriptPdfUrl: matchedTranscript?.pdfDownloadUrl,
+              skills: vac.requiredSkills || [],
+              coverNote: productPitch,
+              consentToShare: true,
+              status: 'RECEIVED',
+              aiMatchScore: (() => {
+                const hay = `${params.allContextText} ${params.generatedDocument?.fileName || ''}`.toLowerCase();
+                const req = vac.requiredSkills || [];
+                const hits = req.filter((s) => hay.includes(s.toLowerCase())).length;
+                const base = 52 + (req.length > 0 ? Math.round((hits / req.length) * 38) : 25);
+                return typeof matchedTranscript?.percentageScore === 'number'
+                  ? Math.round(base * 0.7 + matchedTranscript.percentageScore * 0.3)
+                  : Math.min(96, base);
+              })(),
+              aiMatchSummary: `Auto-scored from candidate CV & profile against ${vac.title}.`,
+              communications: [],
+              appliedAt: nowIso,
+              updatedAt: nowIso,
+            });
+            pState.notifications.unshift({
+              id: `ntf-${crypto.randomUUID().slice(0, 10)}`,
+              organisationId: vac.organisationId,
+              type: 'APPLICATION_RECEIVED',
+              title: `New Nexora Application: ${vac.title}`,
+              message: `${effectiveApplicantName} applied via Nexora AI (${receiptId}).`,
+              actionUrl: '/company/applications',
+              isRead: false,
+              createdAt: nowIso,
+            });
+            platformStore.save();
+          }
+        }
+      }
 
       const contactDisplay =
         [params.customerEmail, params.customerPhone]

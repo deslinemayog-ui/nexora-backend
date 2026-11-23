@@ -178,6 +178,12 @@ model Customer {
   auditLogs           AuditLog[]
   notifications       Notification[]
   memories            CustomerMemory[]
+  assignments         Assignment[]
+  assessmentSessions  AssessmentSession[]
+  assessmentTranscripts AssessmentTranscript[]
+  vacancyApplications VacancyApplication[]
+  interviews          Interview[]
+  placements          Placement[]
 
   @@index([whatsappNumber])
   @@index([accountStatus])
@@ -442,19 +448,25 @@ model AuditLog {
 
 model Notification {
   id                  String             @id @default(uuid())
-  customerId          String
+  customerId          String?
+  organisationId      String?
   projectId           String?
+  type                String             @default("GENERAL")
   title               String
   message             String
+  actionUrl           String?
+  isRead              Boolean            @default(false)
   status              NotificationStatus @default(PENDING)
   sentAt              DateTime?
   errorMessage        String?
   createdAt           DateTime           @default(now())
 
-  customer            Customer           @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customer            Customer?          @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  organisation        Organisation?      @relation(fields: [organisationId], references: [id], onDelete: Cascade)
   project             Project?           @relation(fields: [projectId], references: [id], onDelete: SetNull)
 
-  @@index([customerId, status])
+  @@index([customerId, status, isRead])
+  @@index([organisationId, isRead])
 }
 
 model CustomerMemory {
@@ -472,4 +484,428 @@ model CustomerMemory {
 
   @@unique([customerId, category, key])
   @@index([customerId, category])
+}
+
+// ==================== PHASE 1-5: RECRUITMENT, ASSESSMENTS, PORTALS & STAFFING ====================
+
+enum OrganisationCategory {
+  HIRING_COMPANY
+  RECRUITMENT_AGENCY
+  STAFFING_COMPANY
+  INVESTMENT_PROVIDER
+  RELOCATION_AGENCY
+  IMMIGRATION_CONSULTANCY
+  SCHOLARSHIP_PROVIDER
+  EDUCATIONAL_INSTITUTION
+  OTHER_PROVIDER
+}
+
+enum OrganisationStatus {
+  PENDING_APPROVAL
+  VERIFIED
+  SUSPENDED
+  REJECTED
+}
+
+enum VacancyCategory {
+  EMPLOYMENT
+  RELOCATION
+  SCHOLARSHIP
+  INVESTMENT
+}
+
+enum VacancyType {
+  PERMANENT
+  TEMPORARY
+  CONTRACT
+  PART_TIME
+  FULL_TIME
+  REMOTE
+}
+
+enum WorkArrangement {
+  REMOTE
+  HYBRID
+  ON_SITE
+}
+
+enum VacancyStatus {
+  DRAFT
+  PUBLISHED
+  UNPUBLISHED
+  CLOSED
+}
+
+enum AssignmentCategory {
+  EMPLOYMENT
+  RELOCATION
+  SCHOLARSHIP
+}
+
+enum AssignmentStatus {
+  NOT_STARTED
+  PREREQUISITES_REQUIRED
+  READY_TO_START
+  IN_PROGRESS
+  SUBMITTED
+  UNDER_REVIEW
+  PASSED
+  FAILED
+  EXPIRED
+}
+
+enum DifficultyLevel {
+  INTERMEDIATE
+  ADVANCED
+  HARD
+}
+
+enum ApplicationStatus {
+  RECEIVED
+  SCREENING
+  SHORTLISTED
+  INTERVIEW_SCHEDULED
+  INTERVIEWED
+  OFFER_MADE
+  HIRED
+  REJECTED
+  WITHDRAWN
+}
+
+enum InterviewType {
+  ONLINE
+  TELEPHONE
+  IN_PERSON
+}
+
+enum InterviewStatus {
+  INVITED
+  SCHEDULED
+  RESCHEDULED
+  COMPLETED
+  CANCELLED
+}
+
+enum ContractModel {
+  DIRECT_PLACEMENT
+  CONTRACTOR_PLACEMENT
+  NEXORA_EOR_STAFFING
+}
+
+model Organisation {
+  id                     String               @id @default(uuid())
+  registeredName         String
+  tradingName            String?
+  registrationNumber     String?
+  country                String
+  businessAddress        String
+  website                String?
+  description            String
+  category               OrganisationCategory
+  contactFullName        String
+  contactPosition        String
+  businessEmail          String               @unique
+  passwordHash           String
+  telephone              String
+  generalEmail           String?
+  recruitmentEmail       String
+  interviewEmail         String?
+  billingEmail           String?
+  additionalRecipients   String[]             @default([])
+  emailVerified          Boolean              @default(false)
+  verificationToken      String?
+  verificationDocs       Json                 @default("[]")
+  status                 OrganisationStatus   @default(PENDING_APPROVAL)
+  createdAt              DateTime             @default(now())
+  updatedAt              DateTime             @updatedAt
+
+  vacancies              Vacancy[]
+  applications           VacancyApplication[]
+  interviews             Interview[]
+  notifications          Notification[]
+  placements             Placement[]
+
+  @@index([businessEmail])
+  @@index([category, status])
+}
+
+model Vacancy {
+  id                    String           @id @default(uuid())
+  organisationId        String
+  title                 String
+  category              VacancyCategory  @default(EMPLOYMENT)
+  vacancyType           VacancyType      @default(FULL_TIME)
+  workArrangement       WorkArrangement  @default(REMOTE)
+  location              String
+  salaryRange           String?
+  description           String
+  requirements          String
+  qualifications        String?
+  minYearsExperience    Int              @default(0)
+  requiredSkills        String[]         @default([])
+  requiresAssessment    Boolean          @default(true)
+  passingScorePercent   Int              @default(70)
+  assessmentDurationMin Int              @default(25)
+  applicationDeadline   DateTime?
+  status                VacancyStatus    @default(DRAFT)
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
+
+  organisation          Organisation     @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  assignments           Assignment[]
+  applications          VacancyApplication[]
+  interviews            Interview[]
+  placements            Placement[]
+
+  @@index([organisationId, status])
+  @@index([category, status])
+}
+
+model Assignment {
+  id                   String             @id @default(uuid())
+  customerId           String
+  vacancyId            String?
+  title                String
+  category             AssignmentCategory
+  relatedOpportunity   String
+  providerName         String?
+  durationMinutes      Int                @default(25)
+  passingScorePercent  Int                @default(70)
+  status               AssignmentStatus   @default(NOT_STARTED)
+  prerequisiteData     Json?
+  prerequisitesMet     Boolean            @default(false)
+  missingPrerequisites String[]           @default([])
+  dueDate              DateTime?
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  customer             Customer           @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  vacancy              Vacancy?           @relation(fields: [vacancyId], references: [id], onDelete: SetNull)
+  sessions             AssessmentSession[]
+  transcripts          AssessmentTranscript[]
+
+  @@index([customerId, category, status])
+}
+
+model AssessmentSession {
+  id                 String               @id @default(uuid())
+  assignmentId       String
+  customerId         String
+  rulesAccepted      Boolean              @default(false)
+  startedAt          DateTime?
+  expiresAt          DateTime?
+  submittedAt        DateTime?
+  durationSeconds    Int?
+  totalQuestions     Int                  @default(15)
+  correctCount       Int                  @default(0)
+  incorrectCount     Int                  @default(0)
+  percentageScore    Float                @default(0)
+  passed             Boolean              @default(false)
+  isCompleted        Boolean              @default(false)
+  topicBreakdown     Json                 @default("{}")
+  difficultyBreakdown Json                @default("{}")
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+
+  assignment         Assignment           @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  customer           Customer             @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  questions          AssessmentQuestion[]
+  answers            AssessmentAnswer[]
+  transcript         AssessmentTranscript?
+
+  @@index([assignmentId, customerId])
+}
+
+model AssessmentQuestion {
+  id             String          @id @default(uuid())
+  sessionId      String
+  questionOrder  Int
+  statement      String
+  options        String[]
+  correctIndex   Int
+  difficulty     DifficultyLevel
+  topic          String
+  explanation    String
+  allocatedSec   Int             @default(90)
+  createdAt      DateTime        @default(now())
+
+  session        AssessmentSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  answers        AssessmentAnswer[]
+
+  @@index([sessionId, questionOrder])
+}
+
+model AssessmentAnswer {
+  id             String             @id @default(uuid())
+  sessionId      String
+  questionId     String
+  selectedIndex  Int
+  isCorrect      Boolean            @default(false)
+  timeSpentSec   Int                @default(0)
+  answeredAt     DateTime           @default(now())
+
+  session        AssessmentSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  question       AssessmentQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, questionId])
+}
+
+model AssessmentTranscript {
+  id                   String            @id @default(uuid())
+  customerId           String
+  assignmentId         String
+  sessionId            String            @unique
+  cvDocumentId         String?
+  cvFileName           String?
+  candidateName        String
+  candidateEmail       String?
+  assignmentTitle      String
+  category             AssignmentCategory
+  totalQuestions       Int
+  correctCount         Int
+  percentageScore      Float
+  passed               Boolean
+  totalDurationSec     Int
+  topicBreakdown       Json
+  difficultyBreakdown  Json
+  questionDetails      Json
+  aiPerformanceSummary String
+  pdfFileName          String?
+  pdfDownloadUrl       String?
+  submittedAt          DateTime          @default(now())
+  createdAt            DateTime          @default(now())
+
+  customer             Customer          @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  assignment           Assignment        @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  session              AssessmentSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([customerId, createdAt])
+}
+
+model VacancyApplication {
+  id                  String            @id @default(uuid())
+  referenceCode       String            @unique
+  vacancyId           String
+  organisationId      String
+  customerId          String
+  candidateName       String
+  candidateEmail      String
+  candidatePhone      String?
+  cvFileName          String?
+  cvDownloadUrl       String?
+  transcriptId        String?
+  transcriptScore     Float?
+  qualifications      String?
+  workExperience      String?
+  skills              String[]          @default([])
+  coverNote           String?
+  consentToShare      Boolean           @default(true)
+  status              ApplicationStatus @default(RECEIVED)
+  internalNotes       String?
+  aiMatchSummary      String?
+  aiMatchScore        Int?
+  appliedAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+
+  vacancy             Vacancy           @relation(fields: [vacancyId], references: [id], onDelete: Cascade)
+  organisation        Organisation      @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  customer            Customer          @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  interviews          Interview[]
+
+  @@index([organisationId, status])
+  @@index([customerId, appliedAt])
+}
+
+model Interview {
+  id                   String          @id @default(uuid())
+  organisationId       String
+  vacancyId            String?
+  applicationId        String?
+  customerId           String
+  companyName          String
+  jobTitle             String
+  candidateName        String
+  candidateEmail       String
+  interviewDate        String
+  interviewTime        String
+  timezone             String          @default("UTC")
+  interviewType        InterviewType   @default(ONLINE)
+  locationOrLink       String
+  instructions         String?
+  status               InterviewStatus @default(SCHEDULED)
+  interviewerNotes     String?
+  candidateFeedback    String?
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+
+  organisation         Organisation       @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  vacancy              Vacancy?           @relation(fields: [vacancyId], references: [id], onDelete: SetNull)
+  application          VacancyApplication? @relation(fields: [applicationId], references: [id], onDelete: SetNull)
+  customer             Customer           @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId, status])
+  @@index([organisationId, status])
+}
+
+model Placement {
+  id                   String        @id @default(uuid())
+  organisationId       String
+  vacancyId            String?
+  customerId           String
+  candidateName        String
+  roleTitle            String
+  contractModel        ContractModel @default(DIRECT_PLACEMENT)
+  startDate            String
+  endDate              String?
+  hourlyRateCents      Int?
+  monthlySalaryCents   Int?
+  placementFeeCents    Int?
+  currency             String        @default("USD")
+  legalEntityArranged  Boolean       @default(false)
+  taxComplianceReady   Boolean       @default(false)
+  onboardingStatus     String        @default("ONBOARDING")
+  contractTerms        String?
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  organisation         Organisation  @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  vacancy              Vacancy?      @relation(fields: [vacancyId], references: [id], onDelete: SetNull)
+  customer             Customer      @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  timesheets           Timesheet[]
+  payrollRecords       PayrollRecord[]
+
+  @@index([organisationId])
+  @@index([customerId])
+}
+
+model Timesheet {
+  id            String    @id @default(uuid())
+  placementId   String
+  weekStarting  String
+  hoursWorked   Float
+  attendanceLog String?
+  approved      Boolean   @default(false)
+  invoiced      Boolean   @default(false)
+  invoiceAmountCents Int?
+  createdAt     DateTime  @default(now())
+
+  placement     Placement @relation(fields: [placementId], references: [id], onDelete: Cascade)
+
+  @@index([placementId])
+}
+
+model PayrollRecord {
+  id              String    @id @default(uuid())
+  placementId     String
+  periodLabel     String
+  grossPayCents   Int
+  deductionsCents Int       @default(0)
+  netPayCents     Int
+  status          String    @default("DRAFT_PENDING_COMPLIANCE")
+  payslipUrl      String?
+  createdAt       DateTime  @default(now())
+
+  placement       Placement @relation(fields: [placementId], references: [id], onDelete: Cascade)
+
+  @@index([placementId])
 }

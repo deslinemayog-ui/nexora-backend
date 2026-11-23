@@ -1,13 +1,18 @@
 import React from 'react';
 import {
   ArrowRight,
+  Award,
   Bot,
   Briefcase,
+  Building2,
+  CalendarDays,
   CheckCircle2,
+  ClipboardCheck,
   Cpu,
   CreditCard,
   Database,
   FileCheck,
+  FolderLock,
   Globe2,
   GraduationCap,
   Lock,
@@ -17,6 +22,7 @@ import {
   ShieldCheck,
   Sparkles,
   TrendingUp,
+  Users,
 } from 'lucide-react';
 import { NexoraLogo } from '../components/NexoraLogo';
 
@@ -47,7 +53,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
           top: 0,
           zIndex: 50,
           backdropFilter: 'blur(14px)',
-          background: 'rgba(11, 15, 25, 0.82)',
+          background: 'rgba(11, 15, 25, 0.86)',
           borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
         }}
       >
@@ -75,14 +81,17 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
             style={{
               display: 'flex',
               alignItems: 'center',
-              gap: '20px',
+              gap: '18px',
               fontSize: '13px',
               fontWeight: 600,
               flexWrap: 'wrap',
             }}
           >
-            <a href="#why-nexora" style={{ color: '#cbd5e1', textDecoration: 'none' }}>
-              Why Nexora AI
+            <a href="#candidates" style={{ color: '#cbd5e1', textDecoration: 'none' }}>
+              For Candidates
+            </a>
+            <a href="#companies" style={{ color: '#cbd5e1', textDecoration: 'none' }}>
+              For Companies
             </a>
             <a href="#agents" style={{ color: '#cbd5e1', textDecoration: 'none' }}>
               Specialists
@@ -91,18 +100,11 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
               How It Works
             </a>
             <a
-              href="/privacy"
-              onClick={(e) => linkClick(e, '/privacy')}
-              style={{ color: '#cbd5e1', textDecoration: 'none' }}
+              href="/company/dashboard"
+              onClick={(e) => linkClick(e, '/company/dashboard')}
+              style={{ color: '#6ee7b7', textDecoration: 'none' }}
             >
-              Privacy
-            </a>
-            <a
-              href="/terms"
-              onClick={(e) => linkClick(e, '/terms')}
-              style={{ color: '#cbd5e1', textDecoration: 'none' }}
-            >
-              Terms
+              Company Portal
             </a>
             <a
               href="/app"
@@ -146,7 +148,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
           }}
         >
           <Sparkles className="w-3.5 h-3.5" />
-          <span>Built by Empire Labs • Autonomous AI Workforce</span>
+          <span>Built by Empire Labs • Two-Sided AI Recruitment, Staffing &amp; Opportunity Platform</span>
         </div>
 
         <h1
@@ -156,19 +158,19 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
             lineHeight: 1.12,
             letterSpacing: '-0.8px',
             margin: '0 auto 20px auto',
-            maxWidth: '880px',
+            maxWidth: '920px',
             color: '#ffffff',
           }}
         >
-          Stop Applying Manually.{' '}
+          Verified Talent Meets{' '}
           <span
             style={{
-              background: 'linear-gradient(90deg, #38bdf8 0%, #818cf8 55%, #c084fc 100%)',
+              background: 'linear-gradient(90deg, #38bdf8 0%, #818cf8 55%, #34d399 100%)',
               WebkitBackgroundClip: 'text',
               WebkitTextFillColor: 'transparent',
             }}
           >
-            Let AI Agents Execute For You.
+            Autonomous AI Execution.
           </span>
         </h1>
 
@@ -177,13 +179,14 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
             fontSize: 'clamp(15px, 2vw, 18px)',
             lineHeight: 1.65,
             color: '#94a3b8',
-            maxWidth: '720px',
+            maxWidth: '780px',
             margin: '0 auto 32px auto',
           }}
         >
-          Nexora AI goes far beyond ordinary chat. It drafts executive-grade PDFs (CVs, Visa Dossiers,
-          Investor Pitch Memos, Scholarship Letters), lets you review and edit every word, and autonomously
-          submits your applications—while tracking replies and flagging interview invitations.
+          Nexora AI connects ambitious candidates with hiring companies, recruitment &amp; staffing agencies,
+          relocation specialists, scholarship committees, and investment providers. From AI-tailored assessments
+          and supporting document vaults to 0–100% CV scoring, calendar-integrated interviews, and
+          success-only Paystack billing.
         </p>
 
         <div style={{ display: 'flex', justifyContent: 'center', gap: '14px', flexWrap: 'wrap', marginBottom: '36px' }}>
@@ -204,8 +207,28 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
               boxShadow: '0 10px 30px rgba(37, 99, 235, 0.4)',
             }}
           >
-            <span>Start Free ($5.00 Credit)</span>
+            <span>Candidate App ($5.00 Free Credit)</span>
             <ArrowRight className="w-4 h-4" />
+          </a>
+          <a
+            href="/company/register"
+            onClick={(e) => linkClick(e, '/company/register')}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '8px',
+              padding: '14px 24px',
+              borderRadius: '12px',
+              background: 'rgba(16, 185, 129, 0.14)',
+              border: '1px solid rgba(16, 185, 129, 0.38)',
+              color: '#6ee7b7',
+              textDecoration: 'none',
+              fontWeight: 700,
+              fontSize: '15px',
+            }}
+          >
+            <Building2 className="w-4 h-4" />
+            <span>Register Company / Agency</span>
           </a>
           <a
             href="#how-it-works"
@@ -223,7 +246,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
               fontSize: '15px',
             }}
           >
-            <span>See How It Works</span>
+            <span>See End-to-End Flow</span>
           </a>
         </div>
 
@@ -231,7 +254,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
           style={{
             display: 'flex',
             justifyContent: 'center',
-            gap: '24px',
+            gap: '22px',
             flexWrap: 'wrap',
             fontSize: '12.5px',
             color: '#94a3b8',
@@ -239,29 +262,32 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
           }}
         >
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-            <CheckCircle2 className="w-4 h-4 text-emerald-400" /> $5.00 Free Starter Credit
+            <CheckCircle2 className="w-4 h-4 text-emerald-400" /> AI Assessment Transcripts
           </span>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-            <FileCheck className="w-4 h-4 text-cyan-400" /> Mandatory PDF Review Before Submit
+            <FileCheck className="w-4 h-4 text-cyan-400" /> 0–100% AI CV Scoring
           </span>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-            <Mail className="w-4 h-4 text-indigo-400" /> Live Reply & Interview Alerts
+            <CalendarDays className="w-4 h-4 text-indigo-400" /> Google Calendar &amp; .ics Invites
           </span>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-            <ShieldCheck className="w-4 h-4 text-emerald-400" /> Secured by Paystack
+            <ShieldCheck className="w-4 h-4 text-emerald-400" /> 10% Success-Only Paystack Billing
           </span>
         </div>
       </section>
 
-      {/* Why Nexora AI Section */}
-      <section id="why-nexora" style={{ maxWidth: '1120px', margin: '0 auto', padding: '56px 20px' }}>
+      {/* Candidate Platform Deep-Dive */}
+      <section id="candidates" style={{ maxWidth: '1120px', margin: '0 auto', padding: '56px 20px' }}>
         <div style={{ textAlign: 'center', marginBottom: '40px' }}>
+          <div style={{ fontSize: '11.5px', fontWeight: 800, color: '#38bdf8', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px' }}>
+            Side 1 • For Candidates &amp; Applicants
+          </div>
           <h2 style={{ fontSize: '28px', fontWeight: 800, color: '#ffffff', marginBottom: '10px' }}>
-            Why Nexora AI?
+            Your Complete Career, Relocation &amp; Funding Workspace
           </h2>
-          <p style={{ color: '#94a3b8', fontSize: '15px', maxWidth: '640px', margin: '0 auto' }}>
-            Traditional AI tools stop at generating text. Nexora AI is engineered as an end-to-end execution
-            engine with strict human-in-the-loop safeguards.
+          <p style={{ color: '#94a3b8', fontSize: '15px', maxWidth: '680px', margin: '0 auto' }}>
+            Keep your original CV or let Nexora draft one, prove your skills with AI-verified transcripts,
+            organise supporting documents, and manage every reply and interview in one place.
           </p>
         </div>
 
@@ -274,28 +300,28 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
         >
           {[
             {
-              icon: FileCheck,
+              icon: FolderLock,
               color: '#38bdf8',
-              title: 'PDF-First Review & Iterative Editing',
-              desc: 'Every CV, visa dossier, pitch memo, and motivation letter is compiled into a publication-grade PDF. Inspect it side-by-side and request edits until it is perfect.',
+              title: 'Grouped Supporting Docs Vault',
+              desc: 'Upload your CV, ID/Passport, Qualification Certificates, Academic Transcripts, or Pitch Deck once—organised by agent type and attachable to any application.',
             },
             {
-              icon: Globe2,
+              icon: ClipboardCheck,
               color: '#818cf8',
-              title: 'Live Opportunity Discovery',
-              desc: 'Connects to real job feeds (Adzuna, Remotive, Arbeitnow, Jobicy), licensed visa-sponsor pathways, VC accelerators, and global scholarship portals.',
+              title: 'AI Assessments & PDF Transcripts',
+              desc: 'Complete category prerequisites and take a timed 15-question AI assessment tailored to your Target Role & CV. Earn a permanent PDF transcript linked to your profile.',
             },
             {
-              icon: Mail,
-              color: '#34d399',
-              title: 'Threaded Replies & Interview Detection',
-              desc: 'Read responses directly inside Nexora AI, send chained follow-up replies, and get instant notifications whenever an employer invites you for an interview.',
-            },
-            {
-              icon: ShieldCheck,
+              icon: FileCheck,
               color: '#fbbf24',
-              title: 'Zero Unapproved Submissions',
-              desc: 'Nexora AI never sends an email or fills a portal form on your behalf until you explicitly review your PDF, choose the submission count, and click Approve.',
+              title: 'Original CV & Approval Safeguard',
+              desc: 'Prefer your own CV? Nexora reads your attached document without overwriting it, or drafts a publication-grade PDF for side-by-side review before sending.',
+            },
+            {
+              icon: CalendarDays,
+              color: '#34d399',
+              title: 'WhatsApp-Style Inbox & Interviews',
+              desc: 'Strict REF-tracked email threads strip clutter so you only see real replies. Detected and scheduled interviews appear in your Interviews tab with Google Calendar & .ics downloads.',
             },
           ].map((item, idx) => {
             const Icon = item.icon;
@@ -322,15 +348,138 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
         </div>
       </section>
 
+      {/* Company & Agency Platform Deep-Dive */}
+      <section id="companies" style={{ maxWidth: '1120px', margin: '0 auto', padding: '56px 20px' }}>
+        <div
+          style={{
+            padding: '36px 28px',
+            borderRadius: '20px',
+            background: 'linear-gradient(135deg, rgba(15, 23, 42, 0.92) 0%, rgba(30, 41, 59, 0.78) 100%)',
+            border: '1px solid rgba(99, 102, 241, 0.3)',
+          }}
+        >
+          <div style={{ textAlign: 'center', marginBottom: '36px' }}>
+            <div style={{ fontSize: '11.5px', fontWeight: 800, color: '#6ee7b7', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px' }}>
+              Side 2 • For Companies, Agencies &amp; Opportunity Providers
+            </div>
+            <h2 style={{ fontSize: '28px', fontWeight: 800, color: '#ffffff', marginBottom: '10px' }}>
+              Hire Faster with AI CV Scoring, Verified Transcripts &amp; 10% Success Billing
+            </h2>
+            <p style={{ color: '#cbd5e1', fontSize: '14.5px', maxWidth: '720px', margin: '0 auto' }}>
+              Built for Hiring Companies, Recruitment &amp; Staffing Agencies, Relocation &amp; Immigration Firms,
+              Scholarship Providers, Educational Institutions, and Investment Funds.
+            </p>
+          </div>
+
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+              gap: '16px',
+              marginBottom: '28px',
+            }}
+          >
+            {[
+              {
+                icon: Award,
+                color: '#38bdf8',
+                title: 'AI CV Scoring (0–100%)',
+                desc: 'Every incoming CV PDF and profile is automatically parsed and scored against your role requirements, ranking top applicants first with AI strengths & gaps.',
+              },
+              {
+                icon: ShieldCheck,
+                color: '#a5b4fc',
+                title: 'Transcript-Gated Shortlisting',
+                desc: 'Toggle "Require Verified Assessment Transcript" in your company settings so Nexora automatically filters out unverified candidates before they reach your inbox.',
+              },
+              {
+                icon: CalendarDays,
+                color: '#34d399',
+                title: '1-Click Interview & Calendar Sync',
+                desc: 'Schedule Online, Telephone, or In-Person interviews with auto-generated meeting links, automatic .ics calendar attachments, and candidate notifications.',
+              },
+              {
+                icon: CreditCard,
+                color: '#fbbf24',
+                title: '10% Monthly Paystack Invoicing',
+                desc: 'Set a Monthly USD Offer on each opportunity. When you accept/hire a candidate, Nexora generates a PDF invoice for 10%/month payable online via Paystack.',
+              },
+            ].map((item, idx) => {
+              const Icon = item.icon;
+              return (
+                <div
+                  key={idx}
+                  style={{
+                    padding: '20px',
+                    borderRadius: '14px',
+                    background: 'rgba(11, 15, 25, 0.55)',
+                    border: '1px solid rgba(255, 255, 255, 0.08)',
+                  }}
+                >
+                  <Icon className="w-5 h-5" style={{ color: item.color, marginBottom: '10px' }} />
+                  <h3 style={{ fontSize: '15px', fontWeight: 700, color: '#ffffff', marginBottom: '6px' }}>
+                    {item.title}
+                  </h3>
+                  <p style={{ fontSize: '13px', lineHeight: 1.55, color: '#94a3b8', margin: 0 }}>
+                    {item.desc}
+                  </p>
+                </div>
+              );
+            })}
+          </div>
+
+          <div style={{ display: 'flex', justifyContent: 'center', gap: '14px', flexWrap: 'wrap' }}>
+            <a
+              href="/company/register"
+              onClick={(e) => linkClick(e, '/company/register')}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '8px',
+                padding: '12px 22px',
+                borderRadius: '10px',
+                background: '#6366f1',
+                color: '#ffffff',
+                textDecoration: 'none',
+                fontWeight: 700,
+                fontSize: '14px',
+              }}
+            >
+              <span>Create Free Company Portal</span>
+              <ArrowRight className="w-4 h-4" />
+            </a>
+            <a
+              href="/company/login"
+              onClick={(e) => linkClick(e, '/company/login')}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '8px',
+                padding: '12px 22px',
+                borderRadius: '10px',
+                background: 'rgba(255, 255, 255, 0.06)',
+                border: '1px solid rgba(255, 255, 255, 0.16)',
+                color: '#e2e8f0',
+                textDecoration: 'none',
+                fontWeight: 600,
+                fontSize: '14px',
+              }}
+            >
+              <span>Company Sign In</span>
+            </a>
+          </div>
+        </div>
+      </section>
+
       {/* 4 Specialist Agents */}
       <section id="agents" style={{ maxWidth: '1120px', margin: '0 auto', padding: '56px 20px' }}>
         <div style={{ textAlign: 'center', marginBottom: '40px' }}>
           <h2 style={{ fontSize: '28px', fontWeight: 800, color: '#ffffff', marginBottom: '10px' }}>
             Four Specialised Autonomous Agents
           </h2>
-          <p style={{ color: '#94a3b8', fontSize: '15px', maxWidth: '620px', margin: '0 auto' }}>
-            Every new account includes <strong style={{ color: '#34d399' }}>$5.00 free credit</strong>. Only pay
-            when you approve and dispatch real submissions.
+          <p style={{ color: '#94a3b8', fontSize: '15px', maxWidth: '660px', margin: '0 auto' }}>
+            Nexora-verified partner companies receive priority candidate matching first, alongside live global
+            opportunity discovery. Every candidate starts with <strong style={{ color: '#34d399' }}>$5.00 free credit</strong>.
           </p>
         </div>
 
@@ -344,27 +493,27 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
           {[
             {
               icon: Briefcase,
-              name: 'Find Employment',
-              price: '$1.00 / submission',
-              desc: 'Expands your experience into an ATS-ready CV PDF, matches live tech & industry jobs, fills public forms, and emails your CV directly.',
+              name: 'Employment & Staffing',
+              price: '$0.25 / submission',
+              desc: 'Uses your original CV or compiles an ATS-ready PDF, attaches your Assessment Transcript & ID/Certificates, and prioritizes Nexora hiring partners.',
             },
             {
               icon: Plane,
-              name: 'Relocate Abroad',
+              name: 'Relocate Abroad & Visas',
               price: '$2.00 / submission',
-              desc: 'Builds a Relocation & Visa Pathway Dossier PDF, maps EU Blue Card / UK Skilled Worker / Express Entry routes, and targets visa-sponsoring employers.',
+              desc: 'Pairs your Passport, Police Clearance & Relocation Assessment with licensed visa-sponsoring employers and immigration consultancies.',
             },
             {
               icon: TrendingUp,
-              name: 'Find Investors',
+              name: 'Investments & Funding',
               price: '$1.00 / submission',
-              desc: 'Synthesizes your traction and ask into an Investor Pitch Memorandum PDF and pitches matched VCs, angel syndicates, and accelerators.',
+              desc: 'Attaches your Pitch Deck, Business Plan, and Financials to target matched VCs, angel syndicates, accelerators, and Nexora investment providers.',
             },
             {
               icon: GraduationCap,
-              name: 'Find Scholarships',
+              name: 'Scholarships & Study',
               price: '$1.00 / submission',
-              desc: 'Drafts a tailored Statement of Purpose & Academic Dossier PDF and submits to matched Chevening, DAAD, Erasmus, and university awards.',
+              desc: 'Combines your Academic Transcripts, Motivation Letter, and Scholarship Assessment with global awards and partner institutions.',
             },
           ].map((agent, idx) => {
             const Icon = agent.icon;
@@ -427,66 +576,18 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
         </div>
       </section>
 
-      {/* How It Works */}
-      <section id="how-it-works" style={{ maxWidth: '1040px', margin: '0 auto', padding: '56px 20px' }}>
-        <div style={{ textAlign: 'center', marginBottom: '36px' }}>
-          <h2 style={{ fontSize: '28px', fontWeight: 800, color: '#ffffff', marginBottom: '10px' }}>
-            How It Works
-          </h2>
-          <p style={{ color: '#94a3b8', fontSize: '14.5px', maxWidth: '620px', margin: '0 auto' }}>
-            Every workflow follows a strict 6-stage autonomous pipeline with a mandatory human review gate.
-          </p>
-        </div>
-
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '18px', marginBottom: '42px' }}>
-          {[
-            {
-              step: '01',
-              title: 'Share Your Goal or Form',
-              desc: 'Select a specialist in /app or chat naturally in any language. Your profile auto-fills future tasks so you never type twice.',
-            },
-            {
-              step: '02',
-              title: 'Review & Refine Your PDF',
-              desc: 'Inspect the generated PDF side-by-side, ask for edits directly on the document, and choose how many submissions to send.',
-            },
-            {
-              step: '03',
-              title: 'Approve & Track Interviews',
-              desc: 'Confirm submission to dispatch real emails & portal applications, then read replies and interview alerts in one inbox.',
-            },
-          ].map((s) => (
-            <div
-              key={s.step}
-              style={{
-                padding: '24px',
-                borderRadius: '16px',
-                background: 'rgba(255, 255, 255, 0.025)',
-                border: '1px solid rgba(255, 255, 255, 0.08)',
-              }}
-            >
-              <div style={{ fontSize: '12px', fontWeight: 800, color: '#38bdf8', marginBottom: '8px' }}>
-                STEP {s.step}
-              </div>
-              <h3 style={{ fontSize: '16px', fontWeight: 700, color: '#ffffff', marginBottom: '8px' }}>
-                {s.title}
-              </h3>
-              <p style={{ fontSize: '13.5px', lineHeight: 1.6, color: '#94a3b8', margin: 0 }}>{s.desc}</p>
-            </div>
-          ))}
-        </div>
-
-        {/* Visual Execution Pipeline Diagram */}
+      {/* End-to-End Two-Sided Flow */}
+      <section id="how-it-works" style={{ maxWidth: '1080px', margin: '0 auto', padding: '56px 20px' }}>
         <div
           style={{
-            padding: '28px 22px',
+            padding: '32px 24px',
             borderRadius: '18px',
             background: 'linear-gradient(135deg, rgba(15, 23, 42, 0.9) 0%, rgba(17, 24, 39, 0.95) 100%)',
             border: '1px solid rgba(59, 130, 246, 0.25)',
             boxShadow: '0 16px 40px rgba(0, 0, 0, 0.35)',
           }}
         >
-          <div style={{ textAlign: 'center', marginBottom: '24px' }}>
+          <div style={{ textAlign: 'center', marginBottom: '26px' }}>
             <span
               style={{
                 fontSize: '11px',
@@ -496,35 +597,35 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
                 color: '#60a5fa',
               }}
             >
-              Autonomous Execution Flow
+              Start-to-Finish Platform Lifecycle
             </span>
-            <h3 style={{ fontSize: '20px', fontWeight: 800, color: '#ffffff', margin: '6px 0 0 0' }}>
-              From Prompt to Real Interview Alerts
+            <h3 style={{ fontSize: '22px', fontWeight: 800, color: '#ffffff', margin: '6px 0 0 0' }}>
+              From Document Upload &amp; AI Assessment to Hired Placement &amp; Paystack Billing
             </h3>
           </div>
 
           <div
             style={{
               display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(155px, 1fr))',
               gap: '12px',
               alignItems: 'stretch',
             }}
           >
             {[
-              { icon: Bot, label: '1. Semantic Router', sub: 'Multi-language + Deep Think', color: '#38bdf8' },
-              { icon: Cpu, label: '2. PDF Synthesis', sub: 'Executive ATS-Ready PDF', color: '#818cf8' },
-              { icon: Lock, label: '3. Approval Gate', sub: 'Side-by-side Review & Edit', color: '#fbbf24' },
-              { icon: Globe2, label: '4. Live Discovery', sub: 'Matched Roles & Portals', color: '#c084fc' },
-              { icon: Mail, label: '5. Auto Dispatch', sub: 'Direct Email & Portal Apply', color: '#34d399' },
-              { icon: RefreshCw, label: '6. Reply Monitor', sub: 'Threaded Inbox & Interviews', color: '#60a5fa' },
+              { icon: FolderLock, label: '1. Docs & Profile', sub: 'Original CV + Supporting Docs', color: '#38bdf8' },
+              { icon: ClipboardCheck, label: '2. AI Assessment', sub: '15 Tailored MCQs & Transcript', color: '#818cf8' },
+              { icon: Lock, label: '3. Approve & Apply', sub: 'Partner Roles Ranked First', color: '#fbbf24' },
+              { icon: Users, label: '4. AI CV Scoring', sub: '0–100% Match in Company Portal', color: '#c084fc' },
+              { icon: CalendarDays, label: '5. Interview & .ics', sub: 'Email & Portal Calendar Sync', color: '#34d399' },
+              { icon: CreditCard, label: '6. Hire & 10% Bill', sub: 'Monthly PDF + Paystack Pay', color: '#60a5fa' },
             ].map((node, i) => {
               const Icon = node.icon;
               return (
                 <div
                   key={i}
                   style={{
-                    padding: '14px 12px',
+                    padding: '16px 12px',
                     borderRadius: '12px',
                     background: 'rgba(255, 255, 255, 0.03)',
                     border: '1px solid rgba(148, 163, 184, 0.16)',
@@ -537,8 +638,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
                 >
                   <div
                     style={{
-                      width: '36px',
-                      height: '36px',
+                      width: '38px',
+                      height: '38px',
                       borderRadius: '10px',
                       background: 'rgba(30, 41, 59, 0.9)',
                       display: 'flex',
@@ -558,38 +659,29 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
         </div>
       </section>
 
-      {/* Platform Capabilities Section */}
-      <section style={{ maxWidth: '1040px', margin: '0 auto', padding: '32px 20px 56px 20px' }}>
-        <div style={{ textAlign: 'center', marginBottom: '28px' }}>
-          <h2 style={{ fontSize: '26px', fontWeight: 800, color: '#ffffff', marginBottom: '8px' }}>
-            Built for Speed, Privacy &amp; Precision
-          </h2>
-          <p style={{ color: '#94a3b8', fontSize: '14px', maxWidth: '620px', margin: '0 auto' }}>
-            Engineered by Empire Labs with isolated customer workspaces, encrypted transport, and reliable automation.
-          </p>
-        </div>
-
+      {/* Capabilities Grid */}
+      <section style={{ maxWidth: '1040px', margin: '0 auto', padding: '24px 20px 56px 20px' }}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
           {[
             {
-              icon: Globe2,
-              title: 'Unified Web Workspace',
-              detail: 'Fast, responsive experience at / and /app with instant document previews and mobile support.',
+              icon: Bot,
+              title: 'Employer AI Assistant',
+              detail: 'Companies can draft job descriptions, summarise candidate CVs, and rank shortlists directly inside their dashboard.',
             },
             {
-              icon: Cpu,
-              title: 'Intelligent AI Reasoning',
-              detail: 'Multi-language understanding, deep reasoning mode, and automated portal & document preparation.',
+              icon: Mail,
+              title: 'Strict REF Reply Tracking',
+              detail: 'Every application carries a unique SUB-XXXX reference ID so newsletters and spam never pollute your interview threads.',
             },
             {
               icon: Database,
-              title: 'Persistent Task History',
-              detail: 'Your profile, form details, generated PDFs, and submission receipts stay organized in one place.',
+              title: 'Staffing & EOR Ready',
+              detail: 'Manage placements, contracts, timesheets, and compliance-gated payroll runs for staffing companies.',
             },
             {
-              icon: CreditCard,
-              title: 'Verified Credits & Inbox Sync',
-              detail: 'Pay-as-you-go submission credits ($5 free starter credit) with live reply & interview tracking.',
+              icon: RefreshCw,
+              title: 'Shareable Opportunity Links',
+              detail: 'Every published vacancy gets a public /opportunity/:id page so anyone can view details and apply immediately.',
             },
           ].map((box, idx) => {
             const Icon = box.icon;
@@ -615,23 +707,27 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
       </section>
 
       {/* FAQ Section */}
-      <section style={{ maxWidth: '900px', margin: '0 auto', padding: '20px 20px 56px 20px' }}>
+      <section style={{ maxWidth: '900px', margin: '0 auto', padding: '16px 20px 56px 20px' }}>
         <h2 style={{ fontSize: '24px', fontWeight: 800, color: '#ffffff', textAlign: 'center', marginBottom: '24px' }}>
           Frequently Asked Questions
         </h2>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
           {[
             {
-              q: 'Will Nexora AI ever send applications without my permission?',
-              a: 'No. Every CV, visa dossier, investor memo, and scholarship letter is compiled into a PDF first for you to review and edit. Submissions only run after you click Approve & Submit.',
+              q: 'Does Nexora AI keep my original CV instead of rewriting it?',
+              a: 'Yes. If you attach your own CV in Supporting Docs or the prerequisite modal, Nexora AI reads and submits your original PDF without overwriting it—unless you explicitly click Draft with AI.',
             },
             {
-              q: 'How does the $5.00 free starter credit work?',
-              a: 'Every new account starts with $5.00 in free submission credits. Employment, Investor, and Scholarship submissions cost $1.00 each, and Relocation & Visa submissions cost $2.00 each. You can top up anytime via Paystack.',
+              q: 'How do AI Assessment Transcripts work?',
+              a: 'In the Assignments tab, complete your category prerequisites and take a timed 15-question AI assessment tailored to your Target Job Role and CV. Upon submission, Nexora generates a permanent PDF transcript you can attach to applications.',
             },
             {
-              q: 'How do I see company replies and interview invitations?',
-              a: 'Open the Submissions drawer inside /app and click View Replies or Refresh Inbox. Nexora AI matches inbound email replies to your exact submission receipt and highlights interview invitations automatically.',
+              q: 'How does the 10% monthly company fee work?',
+              a: 'Posting vacancies and receiving AI-scored applications is free. When a company accepts/hires a candidate on an opportunity with a Monthly USD Offer, Nexora automatically generates a 10% monthly PDF invoice payable via Paystack.',
+            },
+            {
+              q: 'Can companies require an Assessment Transcript before accepting applications?',
+              a: 'Yes. Companies can enable "Require Verified Assessment Transcript" in Company Dashboard → Settings, ensuring only candidates with verified transcripts are submitted to their vacancies.',
             },
           ].map((faq, idx) => (
             <div
@@ -655,7 +751,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
         style={{
           borderTop: '1px solid rgba(255, 255, 255, 0.08)',
           padding: '36px 20px',
-          marginTop: '32px',
+          marginTop: '24px',
           background: 'rgba(7, 10, 18, 0.85)',
         }}
       >
@@ -687,7 +783,10 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
 
           <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
             <a href="/app" onClick={(e) => linkClick(e, '/app')} style={{ color: '#cbd5e1', textDecoration: 'none' }}>
-              Launch App
+              Candidate App
+            </a>
+            <a href="/company/dashboard" onClick={(e) => linkClick(e, '/company/dashboard')} style={{ color: '#cbd5e1', textDecoration: 'none' }}>
+              Company Portal
             </a>
             <a
               href="/privacy"

@@ -16,6 +16,10 @@ import {
 } from './firebase';
 import { NexoraLogo, NexoraIcon } from './components/NexoraLogo';
 import { PdfViewer } from './components/PdfViewer';
+import { AssignmentsView } from './components/AssignmentsView';
+import { InterviewsView, type EmailInterviewItem } from './components/InterviewsView';
+import { NotificationsBell } from './components/NotificationsBell';
+import { SupportingDocsModal, type SupportingDocItem } from './components/SupportingDocsModal';
 import {
   Plus,
   Briefcase,
@@ -32,7 +36,7 @@ import {
   PanelLeft,
   Image as ImageIcon,
   Clock,
-  Library,
+  ClipboardCheck,
   Share2,
   ExternalLink,
   Download,
@@ -200,6 +204,14 @@ export const App: React.FC = () => {
   );
   const [showTasksDrawer, setShowTasksDrawer] = useState(false);
   const [showPlusMenu, setShowPlusMenu] = useState(false);
+  const [activeMainView, setActiveMainView] = useState<'chat' | 'assignments' | 'interviews'>('chat');
+  const [pendingAssignmentPrereqId, setPendingAssignmentPrereqId] = useState<string | null>(null);
+  const [assignmentsRefreshKey, setAssignmentsRefreshKey] = useState(0);
+  const [showSupportingDocsModal, setShowSupportingDocsModal] = useState(false);
+  const [supportingDocs, setSupportingDocs] = useState<SupportingDocItem[]>([]);
+  const [savedTranscripts, setSavedTranscripts] = useState<any[]>([]);
+  const [portalInterviewsCount, setPortalInterviewsCount] = useState(0);
+  const [selectedAttachFileNames, setSelectedAttachFileNames] = useState<string[]>([]);
 
   // Conversations & Tasks State (strictly scoped to active user or guest)
   const currentStorageUidRef = useRef<string | null>(null);
@@ -253,7 +265,7 @@ export const App: React.FC = () => {
     draftingNotes: '',
   });
   const [prereqDocs, setPrereqDocs] = useState<
-    Record<string, { fileName?: string; fileSize?: number; draftRequested: boolean }>
+    Record<string, { fileName?: string; fileSize?: number; downloadUrl?: string; draftRequested: boolean }>
   >({
     cv: { draftRequested: false },
     passport: { draftRequested: false },
@@ -476,6 +488,21 @@ export const App: React.FC = () => {
         if (saved.targetRole) setCandidateRole(saved.targetRole);
         if (saved.portfolioUrl) setCandidatePortfolio(saved.portfolioUrl);
         if (saved.notes) setCandidateNotes(saved.notes);
+        if (saved.cvFileName) {
+          setUploadedCvFile({
+            name: saved.cvFileName,
+            size: saved.cvFileSize || 0,
+            dataUrl: saved.cvFileDataUrl,
+          });
+          setPrereqDocs((prev) => ({
+            ...prev,
+            cv: {
+              fileName: saved.cvFileName,
+              fileSize: saved.cvFileSize,
+              draftRequested: false,
+            },
+          }));
+        }
         if (saved.prereqFields) {
           setPrereqFields((prev) => ({
             ...prev,
@@ -486,6 +513,30 @@ export const App: React.FC = () => {
       } else if (authUser?.email) {
         setCandidateName(authUser.displayName || '');
         setCandidateEmail(authUser.email || '');
+      }
+
+      if (!saved?.cvFileName) {
+        const cvConv = cachedConvs.find(
+          (c) =>
+            c.generatedPdf?.fileName &&
+            (c.generatedPdf.fileName.toLowerCase().includes('cv') ||
+              c.generatedPdf.fileName.toLowerCase().includes('resume') ||
+              c.agentType === 'JOB_AGENT'),
+        );
+        if (cvConv?.generatedPdf) {
+          setUploadedCvFile({
+            name: cvConv.generatedPdf.fileName,
+            size: cvConv.generatedPdf.fileSizeBytes || 0,
+          });
+          setPrereqDocs((prev) => ({
+            ...prev,
+            cv: {
+              fileName: cvConv.generatedPdf!.fileName,
+              fileSize: cvConv.generatedPdf!.fileSizeBytes,
+              draftRequested: false,
+            },
+          }));
+        }
       }
 
       if (!authUser?.uid) {
@@ -650,14 +701,23 @@ export const App: React.FC = () => {
   };
 
   const fetchSubmissionReplies = async () => {
-    setIsPollingReplies(true);
-    try {
-      const subs = (activeConversation?.tasks || []).map((t) => ({
+    const allTasks = conversations.flatMap((c) => c.tasks || []);
+    const seen = new Set<string>();
+    const subs = allTasks
+      .filter((t) => {
+        const k = t.receiptId || t.id;
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      })
+      .map((t) => ({
         receiptId: t.receiptId,
         targetName: t.targetName,
         contactEmail: t.contactEmail,
         portalUrl: t.portalUrl,
       }));
+    setIsPollingReplies(true);
+    try {
       const res = await apiFetch('/api/v1/submissions/replies', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -680,10 +740,11 @@ export const App: React.FC = () => {
   };
 
   useEffect(() => {
-    if (showTasksDrawer) {
-      fetchSubmissionReplies();
+    const hasTasks = conversations.some((c) => c.tasks && c.tasks.length > 0);
+    if (hasTasks || showTasksDrawer || activeMainView === 'interviews') {
+      void fetchSubmissionReplies();
     }
-  }, [showTasksDrawer, activeConvId]);
+  }, [conversations.length, showTasksDrawer, activeMainView, activeConvId]);
 
   useEffect(() => {
     const loadAgentsAndWallet = async () => {
@@ -1031,6 +1092,7 @@ export const App: React.FC = () => {
   };
 
   const handleSelectConversation = (conv: ConversationItem) => {
+    setActiveMainView('chat');
     setActiveConvId(conv.id);
     if (conv.messages && conv.messages.length > 0) {
       skipNextStateFetchRef.current = true;
@@ -1189,6 +1251,36 @@ export const App: React.FC = () => {
     if (!file) return;
     if (docKey === 'cv') {
       handleFileDrop(file);
+      const userId = currentUser?.uid || 'guest-user';
+      const reader = new FileReader();
+      reader.onload = () => {
+        const res = String(reader.result || '');
+        const b64 = res.includes(',') ? res.split(',')[1] : res;
+        apiFetch('/api/v1/supporting-documents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userUid: userId,
+            agentType: 'JOB_AGENT',
+            docType: 'CV',
+            label: 'CV / Resume',
+            fileName: file.name,
+            mimeType: file.type || 'application/pdf',
+            contentBase64: b64,
+          }),
+        })
+          .then((r) => r.json())
+          .then((j) => {
+            if (j?.ok && j.data) {
+              setSupportingDocs((prev) => [
+                j.data,
+                ...prev.filter((d) => !(d.agentType === 'JOB_AGENT' && d.docType === 'CV')),
+              ]);
+            }
+          })
+          .catch(() => undefined);
+      };
+      reader.readAsDataURL(file);
     }
     setPrereqDocs((prev) => ({
       ...prev,
@@ -1207,27 +1299,353 @@ export const App: React.FC = () => {
     }));
   };
 
+  const buildAssignmentPrereqPayload = (cat: 'EMPLOYMENT' | 'RELOCATION' | 'SCHOLARSHIP') => {
+    const cvName =
+      prereqDocs.cv?.fileName ||
+      uploadedCvFile?.name ||
+      (prereqDocs.cv?.draftRequested ? 'AI Draft Requested' : '');
+    const notes =
+      prereqFields.draftingNotes ||
+      candidateNotes ||
+      'Provided via Nexora prerequisite profile';
+
+    if (cat === 'EMPLOYMENT') {
+      return {
+        fullName: candidateName || currentUser?.displayName || 'Applicant',
+        email: candidateEmail || currentUser?.email || '',
+        cvFileName: cvName || 'Candidate Profile',
+        cvSummary: notes,
+        employmentHistory: notes,
+        education: prereqFields.studyLevel || 'Verified on Profile / CV',
+        skills: candidateRole || prereqFields.industry || 'General',
+        yearsOfExperience: 2,
+        preferredPosition: candidateRole || 'Target Role',
+        preferredCountries: candidateLocation || 'International / Remote',
+        availability: 'Immediate',
+      };
+    }
+    if (cat === 'RELOCATION') {
+      return {
+        fullName: candidateName || currentUser?.displayName || 'Applicant',
+        email: candidateEmail || currentUser?.email || '',
+        currentCountry: prereqFields.nationality || 'Current Residence',
+        destinationCountry: candidateLocation || 'Target Country',
+        education: prereqFields.studyLevel || 'Verified on Profile / CV',
+        employmentBackground: notes,
+        languages: 'English',
+        relocationObjectives: prereqFields.relocationPurpose || notes,
+      };
+    }
+    return {
+      fullName: candidateName || currentUser?.displayName || 'Applicant',
+      email: candidateEmail || currentUser?.email || '',
+      educationHistory: prereqFields.studyLevel || 'Academic Background',
+      qualifications: prereqFields.studyLevel || 'Academic Qualifications',
+      fieldOfStudy: prereqFields.fieldOfStudy || candidateRole || 'General Studies',
+      achievements: notes,
+      intendedProgramme: `${prereqFields.studyLevel || ''} — ${candidateLocation || 'International'}`,
+      motivationStatement: notes,
+    };
+  };
+
+  // Auto-recover AI-generated CV PDF from any loaded conversation or message
+  useEffect(() => {
+    if (prereqDocs.cv?.fileName) return;
+    let foundPdf: { fileName: string; fileSizeBytes?: number; downloadUrl?: string } | undefined;
+    for (const c of conversations) {
+      if (
+        c.generatedPdf?.fileName &&
+        (c.generatedPdf.fileName.toLowerCase().includes('cv') ||
+          c.generatedPdf.fileName.toLowerCase().includes('resume') ||
+          c.agentType === 'JOB_AGENT')
+      ) {
+        foundPdf = c.generatedPdf;
+        break;
+      }
+      if (Array.isArray(c.messages)) {
+        for (let i = c.messages.length - 1; i >= 0; i--) {
+          const pdf = c.messages[i]?.generatedPdf;
+          if (
+            pdf?.fileName &&
+            (pdf.fileName.toLowerCase().includes('cv') ||
+              pdf.fileName.toLowerCase().includes('resume') ||
+              c.agentType === 'JOB_AGENT')
+          ) {
+            foundPdf = pdf;
+            break;
+          }
+        }
+      }
+      if (foundPdf) break;
+    }
+    if (foundPdf) {
+      setUploadedCvFile((prev) =>
+        prev || { name: foundPdf!.fileName, size: foundPdf!.fileSizeBytes || 0 },
+      );
+      setPrereqDocs((prev) => ({
+        ...prev,
+        cv: {
+          fileName: foundPdf!.fileName,
+          fileSize: foundPdf!.fileSizeBytes,
+          downloadUrl: foundPdf!.downloadUrl,
+          draftRequested: false,
+        },
+      }));
+    }
+  }, [conversations, prereqDocs.cv?.fileName]);
+
+  // Auto-sync already-completed dossier/prerequisite profile to any pending assignments
+  useEffect(() => {
+    const userId = currentUser?.uid || 'guest-user';
+    const emailParam = (candidateEmail || currentUser?.email)
+      ? `&email=${encodeURIComponent(candidateEmail || currentUser?.email || '')}`
+      : '';
+    const allRefs = Array.from(
+      new Set(conversations.flatMap((c) => (c.tasks || []).map((t) => t.receiptId).filter(Boolean))),
+    );
+    const refParam = allRefs.length > 0 ? `&receiptIds=${encodeURIComponent(allRefs.join(','))}` : '';
+    Promise.all([
+      apiFetch(`/api/v1/supporting-documents?userUid=${encodeURIComponent(userId)}`).then((r) => r.json()).catch(() => null),
+      apiFetch(`/api/v1/transcripts?userUid=${encodeURIComponent(userId)}`).then((r) => r.json()).catch(() => null),
+      apiFetch(`/api/v1/interviews?userUid=${encodeURIComponent(userId)}${emailParam}${refParam}`).then((r) => r.json()).catch(() => null),
+    ]).then(([sJson, tJson, iJson]) => {
+      if (iJson?.ok && Array.isArray(iJson.data)) setPortalInterviewsCount(iJson.data.length);
+      if (sJson?.ok) {
+        const sDocs: SupportingDocItem[] = sJson.data || [];
+        setSupportingDocs(sDocs);
+        const sCv = sDocs.find((d) => d.agentType === 'JOB_AGENT' && d.docType === 'CV');
+        if (sCv && !prereqDocs.cv?.fileName) {
+          setUploadedCvFile({ name: sCv.fileName, size: sCv.fileSizeBytes || 0 });
+          setPrereqDocs((prev) => ({
+            ...prev,
+            cv: {
+              fileName: sCv.fileName,
+              fileSize: sCv.fileSizeBytes,
+              downloadUrl: sCv.downloadUrl,
+              draftRequested: false,
+            },
+          }));
+        }
+      }
+      if (tJson?.ok) setSavedTranscripts(tJson.data || []);
+    });
+  }, [currentUser?.uid, previewPdfDoc, activePrereqTask, assignmentsRefreshKey]);
+
+  const emailInterviews: EmailInterviewItem[] = React.useMemo(() => {
+    const byKey = new Map<string, EmailInterviewItem>();
+    for (const r of imapReplies) {
+      if (r.direction !== 'INBOUND' || !r.isInterview) continue;
+      if (/^\s*Dear Hiring Team at\b/i.test(r.body || '')) continue;
+      const key = r.receiptId || `${r.subject}|${r.from}`;
+      if (byKey.has(key)) continue;
+      let matchedConvId: string | undefined;
+      let matchedTask: FollowUpTask | undefined;
+      // 1. Exact receiptId match across ALL conversations
+      if (r.receiptId) {
+        for (const c of conversations) {
+          const t = c.tasks.find((item) => item.receiptId === r.receiptId);
+          if (t) {
+            matchedConvId = c.id;
+            matchedTask = t;
+            break;
+          }
+        }
+      }
+      // 2. Subject includes targetName match across ALL conversations
+      if (!matchedTask && r.subject) {
+        const subjLower = r.subject.toLowerCase();
+        for (const c of conversations) {
+          const t = c.tasks.find(
+            (item) => item.targetName && subjLower.includes(item.targetName.toLowerCase()),
+          );
+          if (t) {
+            matchedConvId = c.id;
+            matchedTask = t;
+            break;
+          }
+        }
+      }
+      // 3. Fallback: contactEmail match only if receiptId/targetName didn't match
+      if (!matchedTask) {
+        for (const c of conversations) {
+          const t = c.tasks.find(
+            (item) =>
+              item.contactEmail &&
+              r.from.toLowerCase().includes(item.contactEmail.toLowerCase()),
+          );
+          if (t) {
+            matchedConvId = c.id;
+            matchedTask = t;
+            break;
+          }
+        }
+      }
+      const cleanSummary = String(r.interviewSummary || r.body || '')
+        .replace(/\s*-{2,}\s*On\s+[\s\S]*?\bwrote\b[\s\S]*$/i, '')
+        .replace(/\s*From:\s*[\s\S]*?\b(?:Sent|Date)\s*:\s*[\s\S]*$/i, '')
+        .replace(/\s*Application Submission\s*[•·-]\s*Ref\s+SUB-[\s\S]*$/i, '')
+        .trim()
+        .slice(0, 180);
+      byKey.set(key, {
+        id: r.id,
+        receiptId: r.receiptId,
+        companyName: matchedTask?.targetName || r.companyName || r.from,
+        subject: r.subject,
+        summary: cleanSummary,
+        receivedAt: r.receivedAt,
+        from: r.from,
+        convId: matchedConvId,
+        task: matchedTask,
+      });
+    }
+    return Array.from(byKey.values());
+  }, [imapReplies, conversations]);
+
+  const totalInterviewBadgeCount = emailInterviews.length + portalInterviewsCount;
+
+  const renderAttachmentSelector = (compact = false) => {
+    const activeAgent =
+      activePrereqTask === 'relocate'
+        ? 'VISA_AGENT'
+        : activePrereqTask === 'scholarships'
+          ? 'EDUCATION_AGENT'
+          : activePrereqTask === 'investors'
+            ? 'INVESTOR_AGENT'
+            : activePrereqTask === 'employment'
+              ? 'JOB_AGENT'
+              : activeConversation?.agentType || 'JOB_AGENT';
+
+    const activeCvName = prereqDocs.cv?.fileName || uploadedCvFile?.name || previewPdfDoc?.fileName;
+    const sortedSupporting = [...supportingDocs]
+      .filter((d) => !(d.docType === 'CV' && d.fileName === activeCvName))
+      .sort((a, b) =>
+        a.agentType === activeAgent && b.agentType !== activeAgent
+          ? -1
+          : b.agentType === activeAgent && a.agentType !== activeAgent
+            ? 1
+            : 0,
+      );
+
+    return (
+      <div
+        style={{
+          padding: compact ? '10px 12px' : '12px',
+          borderRadius: '10px',
+          background: '#171717',
+          border: '1px solid #2e2e2e',
+          marginBottom: compact ? '12px' : undefined,
+        }}
+      >
+        <div className="flex items-center justify-between gap-2 mb-2">
+          <span className="text-xs font-bold text-white">
+            Attach Assessment Transcript & Supporting Docs
+          </span>
+          <button
+            type="button"
+            onClick={() => setShowSupportingDocsModal(true)}
+            className="text-[11px] text-cyan-400 underline"
+            style={{ background: 'transparent', border: 'none', cursor: 'pointer' }}
+          >
+            + Manage Docs
+          </button>
+        </div>
+
+        {savedTranscripts.length === 0 && sortedSupporting.length === 0 ? (
+          <div className="text-[11px] text-slate-400">
+            No transcripts or supporting documents saved yet. Click &ldquo;+ Manage Docs&rdquo; to upload ID, certificates, or passport, or complete an Assignment to generate a transcript PDF.
+          </div>
+        ) : (
+          <div className="flex flex-col gap-1.5" style={{ maxHeight: '140px', overflowY: 'auto' }}>
+            {savedTranscripts.map((trn) =>
+              trn.pdfFileName ? (
+                <label
+                  key={trn.id}
+                  className="flex items-center gap-2 text-xs text-emerald-300"
+                  style={{ cursor: 'pointer' }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedAttachFileNames.includes(trn.pdfFileName)}
+                    onChange={(e) => {
+                      const name = trn.pdfFileName;
+                      setSelectedAttachFileNames((prev) =>
+                        e.target.checked ? [...prev, name] : prev.filter((x) => x !== name),
+                      );
+                    }}
+                  />
+                  <span>
+                    Transcript PDF: {trn.assignmentTitle} ({trn.percentageScore}%)
+                  </span>
+                </label>
+              ) : null,
+            )}
+            {sortedSupporting.map((doc) => (
+              <label
+                key={doc.id}
+                className="flex items-center gap-2 text-xs text-slate-300"
+                style={{ cursor: 'pointer' }}
+              >
+                <input
+                  type="checkbox"
+                  checked={selectedAttachFileNames.includes(doc.storedFileName)}
+                  onChange={(e) => {
+                    const name = doc.storedFileName;
+                    setSelectedAttachFileNames((prev) =>
+                      e.target.checked ? [...prev, name] : prev.filter((x) => x !== name),
+                    );
+                  }}
+                />
+                <span>
+                  [{doc.agentType.replace('_AGENT', '')}] {doc.label}: {doc.fileName}
+                </span>
+              </label>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  useEffect(() => {
+    if (activeMainView !== 'assignments') return;
+    const userId = currentUser?.uid || 'guest-user';
+    const hasCoreProfile = Boolean(
+      candidateName.trim() &&
+      candidateEmail.trim() &&
+      (prereqDocs.cv?.fileName || uploadedCvFile?.name || candidateRole.trim() || prereqFields.draftingNotes.trim()),
+    );
+    if (!hasCoreProfile) return;
+
+    (async () => {
+      const res = await apiFetch(`/api/v1/assignments?userUid=${encodeURIComponent(userId)}`).catch(() => null);
+      const json = await res?.json().catch(() => null);
+      if (!json?.ok || !Array.isArray(json.data)) return;
+      let updatedAny = false;
+      for (const asg of json.data) {
+        if (asg.status === 'PREREQUISITES_REQUIRED' || !asg.prerequisitesMet) {
+          const cat = asg.category as 'EMPLOYMENT' | 'RELOCATION' | 'SCHOLARSHIP';
+          if (cat === 'RELOCATION' && !prereqFields.nationality.trim()) continue;
+          if (cat === 'SCHOLARSHIP' && !prereqFields.fieldOfStudy.trim()) continue;
+          const payload = buildAssignmentPrereqPayload(cat);
+          const syncRes = await apiFetch(`/api/v1/assignments/${asg.id}/prerequisites`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userUid: userId, data: payload }),
+          }).catch(() => null);
+          if (syncRes?.ok) updatedAny = true;
+        }
+      }
+      if (updatedAny) {
+        setAssignmentsRefreshKey((k) => k + 1);
+      }
+    })();
+  }, [activeMainView, currentUser?.uid, candidateName, candidateEmail, candidateRole, prereqDocs.cv?.fileName, uploadedCvFile?.name]);
+
   const handleSubmitPrerequisites = async (e: React.FormEvent, interviewInChat = false) => {
     e.preventDefault();
     if (!activePrereqTask) return;
 
     const choice = TASK_CHOICES.find((t) => t.id === activePrereqTask)!;
-    const newId = `conv-${Date.now()}`;
-    const newConv: ConversationItem = {
-      id: newId,
-      title: formatTaskTitleWithDate(choice.title),
-      agentType: choice.agent,
-      lastMessageSnippet: 'Prerequisites submitted',
-      updatedAt: 'Just now',
-      tasks: [],
-    };
-
-    skipNextStateFetchRef.current = true;
-    setConversations((prev) => [newConv, ...prev]);
-    setActiveConvId(newId);
-    setMessages([]);
-    setActivePrereqTask(null);
-
     const userId = currentUser?.uid || 'guest-user';
     const dossier: CandidateDossier = {
       fullName: candidateName || currentUser?.displayName || 'Applicant',
@@ -1245,6 +1663,44 @@ export const App: React.FC = () => {
     };
     saveCandidateDossier(userId, dossier).catch(() => { });
 
+    if (pendingAssignmentPrereqId) {
+      const asgId = pendingAssignmentPrereqId;
+      const cat =
+        activePrereqTask === 'relocate'
+          ? 'RELOCATION'
+          : activePrereqTask === 'scholarships'
+            ? 'SCHOLARSHIP'
+            : 'EMPLOYMENT';
+      const mappedData = buildAssignmentPrereqPayload(cat);
+
+      await apiFetch(`/api/v1/assignments/${asgId}/prerequisites`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userUid: userId, data: mappedData }),
+      }).catch(() => undefined);
+
+      setPendingAssignmentPrereqId(null);
+      setActivePrereqTask(null);
+      setAssignmentsRefreshKey((k) => k + 1);
+      return;
+    }
+
+    const newId = `conv-${Date.now()}`;
+    const newConv: ConversationItem = {
+      id: newId,
+      title: formatTaskTitleWithDate(choice.title),
+      agentType: choice.agent,
+      lastMessageSnippet: 'Prerequisites submitted',
+      updatedAt: 'Just now',
+      tasks: [],
+    };
+
+    skipNextStateFetchRef.current = true;
+    setConversations((prev) => [newConv, ...prev]);
+    setActiveConvId(newId);
+    setMessages([]);
+    setActivePrereqTask(null);
+
     const formatDocStatus = (label: string, key: string) => {
       const d = prereqDocs[key];
       if (d?.fileName) return `- **${label}:** 📎 \`${d.fileName}\` (Uploaded)`;
@@ -1252,16 +1708,24 @@ export const App: React.FC = () => {
       return `- **${label}:** Not provided`;
     };
 
+    const existingDocInstruction = (docLabel: string, fileName?: string) =>
+      `[DO_NOT_DRAFT_NEW_DOCUMENT]\nIMPORTANT: The applicant already attached their original ${docLabel} (${fileName || 'Uploaded Document'}). Do NOT draft, rewrite, or generate a new PDF. Acknowledge that you have read their attached ${docLabel}, briefly confirm key details, and ask: "I have read your ${docLabel}${fileName ? ` (${fileName})` : ''}. Should I submit your applications now?"`;
+
     let prompt = '';
     if (activePrereqTask === 'employment') {
+      const hasCv = Boolean((prereqDocs.cv?.fileName || uploadedCvFile?.name) && !prereqDocs.cv?.draftRequested);
       const needsCvDraft = prereqDocs.cv?.draftRequested || (!prereqDocs.cv?.fileName && !uploadedCvFile);
+      const cvName = prereqDocs.cv?.fileName || uploadedCvFile?.name;
       prompt = [
         `${dossier.fullName} wants help applying for a job (${candidateRole || 'Target Role'} in ${candidateLocation || 'Remote / International'}).`,
         `Contact: Email ${dossier.email}, Phone ${dossier.phone}.`,
-        formatDocStatus('CV / Resume', 'cv'),
+        cvName && !prereqDocs.cv?.draftRequested
+          ? `- **CV / Resume:** 📎 \`${cvName}\` (Uploaded)`
+          : formatDocStatus('CV / Resume', 'cv'),
         candidatePortfolio ? `- **Portfolio / LinkedIn:** ${candidatePortfolio}` : '',
-        prereqFields.draftingNotes
-          ? `Candidate Background & Info for CV Drafting:\n${prereqFields.draftingNotes}`
+        prereqFields.draftingNotes ? `Candidate Background & Info:\n${prereqFields.draftingNotes}` : '',
+        hasCv
+          ? existingDocInstruction('Resume / CV', cvName)
           : needsCvDraft
             ? `I do not have a CV ready yet. Please interview me step-by-step about what I do, my work experience, skills, and education so we can build a professional CV PDF for my review before submitting.`
             : `Please review my uploaded CV and prepare matching applications for my approval.`,
@@ -1269,6 +1733,12 @@ export const App: React.FC = () => {
         .filter(Boolean)
         .join('\n');
     } else if (activePrereqTask === 'relocate') {
+      const hasRelocDoc = Boolean(
+        (prereqDocs.passport?.fileName || prereqDocs.cv?.fileName || uploadedCvFile?.name) &&
+          !prereqDocs.passport?.draftRequested &&
+          !prereqDocs.cv?.draftRequested,
+      );
+      const relocDocName = prereqDocs.passport?.fileName || prereqDocs.cv?.fileName || uploadedCvFile?.name;
       prompt = [
         `${dossier.fullName} wants to relocate abroad to **${candidateLocation || 'Destination Country'}** (Nationality: ${prereqFields.nationality || 'Not specified'}, Purpose: ${prereqFields.relocationPurpose}).`,
         `Contact: Email ${dossier.email}, Phone ${dossier.phone}.`,
@@ -1276,19 +1746,28 @@ export const App: React.FC = () => {
         formatDocStatus('CV / Resume', 'cv'),
         formatDocStatus('Existing Visa / Offer Letter', 'visa'),
         prereqFields.draftingNotes ? `Additional Relocation / Qualification Info:\n${prereqFields.draftingNotes}` : '',
-        `Please evaluate eligible visa pathways, list any missing document checklists, draft any requested documents for review, and wait for my approval before submitting anything.`,
+        hasRelocDoc
+          ? existingDocInstruction('Relocation Documents', relocDocName)
+          : `Please evaluate eligible visa pathways, list any missing document checklists, draft any requested documents for review, and wait for my approval before submitting anything.`,
       ]
         .filter(Boolean)
         .join('\n');
     } else if (activePrereqTask === 'investors') {
+      const hasInvestorDoc = Boolean(
+        (prereqDocs.businessPlan?.fileName || prereqDocs.pitchDeck?.fileName) &&
+          !prereqDocs.businessPlan?.draftRequested &&
+          !prereqDocs.pitchDeck?.draftRequested,
+      );
+      const investorDocName = prereqDocs.pitchDeck?.fileName || prereqDocs.businessPlan?.fileName;
       const needsPlanDraft = prereqDocs.businessPlan?.draftRequested || prereqDocs.pitchDeck?.draftRequested;
       prompt = [
         `${dossier.fullName} is seeking investors for **${prereqFields.companyName || 'Startup Venture'}** (Industry: ${prereqFields.industry || 'Tech'}, Stage: ${prereqFields.fundingStage}, Target Raise: ${prereqFields.targetRaise}).`,
         `Contact: Email ${dossier.email}, Phone ${dossier.phone}${prereqFields.websiteUrl ? `, Website: ${prereqFields.websiteUrl}` : ''}.`,
         formatDocStatus('Business Plan', 'businessPlan'),
         formatDocStatus('Pitch Deck', 'pitchDeck'),
-        prereqFields.draftingNotes
-          ? `Startup & Business Plan Details:\n${prereqFields.draftingNotes}`
+        prereqFields.draftingNotes ? `Startup & Business Plan Details:\n${prereqFields.draftingNotes}` : '',
+        hasInvestorDoc
+          ? existingDocInstruction('Business Plan / Pitch Deck', investorDocName)
           : needsPlanDraft
             ? `I do not have a business plan / pitch deck ready yet. Please interview me to gather any missing startup details, then draft the Business Plan & Pitch for my review before emailing investors.`
             : `Please prepare investor matching and introductory pitch drafts for my review before sending.`,
@@ -1296,14 +1775,22 @@ export const App: React.FC = () => {
         .filter(Boolean)
         .join('\n');
     } else {
+      const hasScholarDoc = Boolean(
+        (prereqDocs.transcripts?.fileName || prereqDocs.motivationLetter?.fileName || prereqDocs.cv?.fileName || uploadedCvFile?.name) &&
+          !prereqDocs.motivationLetter?.draftRequested &&
+          !prereqDocs.cv?.draftRequested,
+      );
+      const scholarDocName =
+        prereqDocs.motivationLetter?.fileName || prereqDocs.transcripts?.fileName || prereqDocs.cv?.fileName || uploadedCvFile?.name;
       prompt = [
         `${dossier.fullName} is applying for scholarships (Nationality: ${prereqFields.nationality || 'Not specified'}, Study Level: ${prereqFields.studyLevel}, Field: ${prereqFields.fieldOfStudy || 'Tech / Business'}, Target Country: ${candidateLocation || 'International'}).`,
         `Contact: Email ${dossier.email}, Phone ${dossier.phone}.`,
         formatDocStatus('Academic Transcripts / Certificates', 'transcripts'),
         formatDocStatus('Motivation Letter / SOP', 'motivationLetter'),
         formatDocStatus('Academic CV', 'cv'),
-        prereqFields.draftingNotes
-          ? `Academic Background, Achievements & Goals:\n${prereqFields.draftingNotes}`
+        prereqFields.draftingNotes ? `Academic Background, Achievements & Goals:\n${prereqFields.draftingNotes}` : '',
+        hasScholarDoc
+          ? existingDocInstruction('Academic / Scholarship Documents', scholarDocName)
           : `Please interview me for any missing academic/goal details so you can draft my Motivation Letter / Academic CV and shortlist eligible scholarships for my review before submitting.`,
       ]
         .filter(Boolean)
@@ -1579,6 +2066,8 @@ export const App: React.FC = () => {
                 contentBase64: a.contentBase64,
               }))
               : undefined,
+          attachedDocumentFileNames:
+            selectedAttachFileNames.length > 0 ? selectedAttachFileNames : undefined,
         }),
       });
 
@@ -1758,6 +2247,23 @@ export const App: React.FC = () => {
                 : c,
             ),
           );
+          if (
+            generatedDoc.fileName?.toLowerCase().includes('cv') ||
+            generatedDoc.fileName?.toLowerCase().includes('resume')
+          ) {
+            setUploadedCvFile({
+              name: generatedDoc.fileName,
+              size: generatedDoc.fileSizeBytes || 0,
+            });
+            setPrereqDocs((prev) => ({
+              ...prev,
+              cv: {
+                fileName: generatedDoc.fileName,
+                fileSize: generatedDoc.fileSizeBytes,
+                draftRequested: false,
+              },
+            }));
+          }
         }
 
         // Record ONLY actual submissions dispatched on behalf of the user (never internal 8-step plan items!)
@@ -2094,16 +2600,86 @@ export const App: React.FC = () => {
         </div>
 
         {/* New Task Button */}
-        <button onClick={handleNewConversation} className="sidebar-action-btn mt-2 font-bold">
+        <button
+          onClick={() => {
+            setActiveMainView('chat');
+            handleNewConversation();
+          }}
+          className="sidebar-action-btn mt-2 font-bold"
+        >
           <Plus className="w-4 h-4 text-slate-300" />
           <span>New task</span>
         </button>
 
-        {/* Library Link */}
-        <div className="flex flex-col mt-1">
-          <button className="sidebar-action-btn">
-            <Library className="w-4 h-4 text-slate-400" />
-            <span>Library</span>
+        {/* Assignments, Interviews & Company Dashboard */}
+        <div className="flex flex-col mt-1 gap-0.5">
+          <button
+            type="button"
+            onClick={() => {
+              setActiveMainView('assignments');
+              if (typeof window !== 'undefined' && window.innerWidth <= 900) {
+                setSidebarCollapsed(true);
+              }
+            }}
+            className={`sidebar-action-btn ${activeMainView === 'assignments' ? 'bg-white/10 text-white' : ''}`}
+          >
+            <ClipboardCheck className="w-4 h-4 text-indigo-400" />
+            <span>Assignments</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setActiveMainView('interviews');
+              if (typeof window !== 'undefined' && window.innerWidth <= 900) {
+                setSidebarCollapsed(true);
+              }
+            }}
+            className={`sidebar-action-btn ${activeMainView === 'interviews' ? 'bg-white/10 text-white' : ''}`}
+            style={{ justifyContent: 'space-between' }}
+          >
+            <span className="flex items-center gap-2">
+              <CalendarDays className="w-4 h-4 text-emerald-400" />
+              <span>Interviews</span>
+            </span>
+            {totalInterviewBadgeCount > 0 && (
+              <span
+                style={{
+                  fontSize: '10.5px',
+                  fontWeight: 700,
+                  padding: '1px 7px',
+                  borderRadius: '999px',
+                  background: 'rgba(16, 185, 129, 0.22)',
+                  color: '#6ee7b7',
+                }}
+              >
+                {totalInterviewBadgeCount}
+              </span>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (typeof window !== 'undefined') {
+                window.open('/company/dashboard', '_blank', 'noopener,noreferrer');
+              }
+            }}
+            className="sidebar-action-btn"
+          >
+            <Building2 className="w-4 h-4 text-amber-400" />
+            <span>Company Dashboard</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setShowSupportingDocsModal(true);
+              if (typeof window !== 'undefined' && window.innerWidth <= 900) {
+                setSidebarCollapsed(true);
+              }
+            }}
+            className="sidebar-action-btn"
+          >
+            <UploadCloud className="w-4 h-4 text-cyan-400" />
+            <span>Supporting Docs</span>
           </button>
         </div>
 
@@ -2271,13 +2847,26 @@ export const App: React.FC = () => {
                 <PanelLeft className="w-4 h-4" />
               </button>
             )}
-            <button className="model-dropdown-btn">
-              <span>{activeConversation ? activeConversation.title : 'Nexora AI'}</span>
+            <button
+              type="button"
+              onClick={() => setActiveMainView('chat')}
+              className="model-dropdown-btn"
+            >
+              <span>
+                {activeMainView === 'assignments'
+                  ? 'Assignments'
+                  : activeMainView === 'interviews'
+                    ? 'Interviews'
+                    : activeConversation
+                      ? activeConversation.title
+                      : 'Nexora AI'}
+              </span>
               <ChevronDown className="w-4 h-4 text-slate-400" />
             </button>
           </div>
 
           <div className="gpt-header-right">
+            <NotificationsBell userUid={currentUser?.uid || 'guest-user'} apiFetch={apiFetch} />
             <button
               type="button"
               onClick={() => {
@@ -2323,620 +2912,671 @@ export const App: React.FC = () => {
           </div>
         </header>
 
-        {/* Center: Either Hero 2x4 Task Selection Grid OR Active Messages */}
-        {messages.length === 0 ? (
-          <div className="hero-center">
-            <h1 className="hero-heading">Tell us what you want to accomplish.</h1>
-            <p className="hero-subheading">Your AI workforce can help you with:</p>
-
-            {/* 2x4 Grid of Task Cards matching user's screenshot */}
-            <div className="tasks-grid">
-              {(agentCatalog.length > 0
-                ? agentCatalog.map((dbAgent) => {
-                  const fallback = TASK_CHOICES.find((c) => c.agent === dbAgent.agentType || c.id === dbAgent.taskKey) || TASK_CHOICES[0]!;
-                  return {
-                    ...fallback,
-                    id: dbAgent.taskKey || fallback.id,
-                    title: dbAgent.name,
-                    agent: dbAgent.agentType,
-                    costDollars: dbAgent.costPerSubmissionDollars,
-                  };
-                })
-                : TASK_CHOICES.map((c) => ({
-                  ...c,
-                  costDollars: c.agent === 'JOB_AGENT' ? '0.25' : c.agent === 'VISA_AGENT' ? '2.00' : '1.00',
-                }))
-              ).map((choice) => {
-                const IconComponent = choice.icon;
-                return (
-                  <button
-                    key={choice.id}
-                    onClick={() => handleSelectTaskCard(choice)}
-                    className="task-choice-card"
-                  >
-                    <IconComponent className="task-choice-icon" />
-                    <span className="task-choice-title">{choice.title}</span>
-                    <span
-                      style={{
-                        marginTop: '6px',
-                        fontSize: '10px',
-                        fontWeight: 700,
-                        padding: '2px 8px',
-                        borderRadius: '999px',
-                        background: choice.agent === 'VISA_AGENT' ? 'rgba(245, 158, 11, 0.14)' : 'rgba(56, 189, 248, 0.12)',
-                        color: choice.agent === 'VISA_AGENT' ? '#fcd34d' : '#7dd3fc',
-                        border: choice.agent === 'VISA_AGENT' ? '1px solid rgba(245, 158, 11, 0.35)' : '1px solid rgba(56, 189, 248, 0.3)',
-                      }}
-                    >
-                      ${choice.costDollars} / submission
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Subtitle / Callout */}
-            <div className="hero-footer-callout">
-              <div className="hero-footer-pill">
-                <Sparkles className="w-3.5 h-3.5" />
-                <span>Powered by specialised AI agents</span>
-              </div>
-              <p className="hero-footer-caption">
-                One WhatsApp number. Multiple specialised services. Built by{' '}
-                <a
-                  href="https://www.empirelabs.digital/"
-                  target="_blank"
-                  rel="noreferrer"
-                  style={{ color: '#60a5fa', textDecoration: 'underline' }}
-                >
-                  Empire Labs
-                </a>
-                .
-              </p>
-            </div>
-          </div>
+        {activeMainView === 'assignments' ? (
+          <AssignmentsView
+            userUid={currentUser?.uid || 'guest-user'}
+            candidateName={candidateName || currentUser?.displayName || ''}
+            candidateEmail={candidateEmail || currentUser?.email || ''}
+            candidatePhone={candidatePhone || getSessionPhoneNumber(currentUser)}
+            cvFileName={uploadedCvFile?.name}
+            apiFetch={apiFetch}
+            resolveApiUrl={resolveApiUrl}
+            refreshKey={assignmentsRefreshKey}
+            onOpenPrerequisites={(asg) => {
+              setPendingAssignmentPrereqId(asg.id);
+              setActivePrereqTask(
+                asg.category === 'RELOCATION'
+                  ? 'relocate'
+                  : asg.category === 'SCHOLARSHIP'
+                    ? 'scholarships'
+                    : 'employment',
+              );
+            }}
+            onClose={() => setActiveMainView('chat')}
+          />
+        ) : activeMainView === 'interviews' ? (
+          <InterviewsView
+            userUid={currentUser?.uid || 'guest-user'}
+            candidateEmail={candidateEmail || currentUser?.email || ''}
+            receiptIds={Array.from(new Set(conversations.flatMap((c) => (c.tasks || []).map((t) => t.receiptId).filter(Boolean))))}
+            apiFetch={apiFetch}
+            emailInterviews={emailInterviews}
+            onOpenSubmissionChat={(item) => {
+              if (item.convId) setActiveConvId(item.convId);
+              setActiveMainView('chat');
+              openFollowUpModal(
+                item.task || {
+                  id: item.id,
+                  targetName: item.companyName,
+                  category: 'Email Interview',
+                  portalUrl: '#',
+                  contactEmail: item.from,
+                  status: 'SUBMITTED',
+                  receiptId: item.receiptId || item.id,
+                  submittedAt: item.receivedAt,
+                },
+              );
+            }}
+            onClose={() => setActiveMainView('chat')}
+          />
         ) : (
-          <div className="chat-scroll-stream">
-            {messages.map((msg) => (
-              <div
-                key={msg.id}
-                className={`chat-turn-container ${msg.direction === 'INBOUND' ? 'user' : 'assistant'}`}
-              >
-                <div
-                  className={`turn-avatar ${msg.direction === 'INBOUND' ? 'user' : 'assistant'
-                    }`}
-                >
-                  {msg.direction === 'INBOUND' ? (
-                    currentUser?.photoURL ? (
-                      <img
-                        src={currentUser.photoURL}
-                        alt="User"
-                        className="w-full h-full rounded-full object-cover"
-                      />
-                    ) : (
-                      (currentUser?.displayName || currentUser?.email || 'U')[0].toUpperCase()
-                    )
-                  ) : (
-                    <NexoraIcon size={18} />
-                  )}
-                </div>
-                <div className="turn-content">
-                  {msg.direction === 'OUTBOUND' && msg.thinkingSummary && (
-                    <div
-                      style={{
-                        marginBottom: '10px',
-                        borderRadius: '10px',
-                        background: 'rgba(59, 130, 246, 0.08)',
-                        border: '1px solid rgba(59, 130, 246, 0.25)',
-                        overflow: 'hidden',
-                      }}
-                    >
+          <>
+            {/* Center: Either Hero 2x4 Task Selection Grid OR Active Messages */}
+            {messages.length === 0 ? (
+              <div className="hero-center">
+                <h1 className="hero-heading">Tell us what you want to accomplish.</h1>
+                <p className="hero-subheading">Your AI workforce can help you with:</p>
+
+                {/* 2x4 Grid of Task Cards matching user's screenshot */}
+                <div className="tasks-grid">
+                  {(agentCatalog.length > 0
+                    ? agentCatalog.map((dbAgent) => {
+                      const fallback = TASK_CHOICES.find((c) => c.agent === dbAgent.agentType || c.id === dbAgent.taskKey) || TASK_CHOICES[0]!;
+                      return {
+                        ...fallback,
+                        id: dbAgent.taskKey || fallback.id,
+                        title: dbAgent.name,
+                        agent: dbAgent.agentType,
+                        costDollars: dbAgent.costPerSubmissionDollars,
+                      };
+                    })
+                    : TASK_CHOICES.map((c) => ({
+                      ...c,
+                      costDollars: c.agent === 'JOB_AGENT' ? '0.25' : c.agent === 'VISA_AGENT' ? '2.00' : '1.00',
+                    }))
+                  ).map((choice) => {
+                    const IconComponent = choice.icon;
+                    return (
                       <button
-                        type="button"
-                        onClick={() =>
-                          setExpandedThinkingIds((prev) => ({ ...prev, [msg.id]: !prev[msg.id] }))
-                        }
-                        style={{
-                          width: '100%',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          padding: '7px 11px',
-                          background: 'transparent',
-                          border: 'none',
-                          color: '#93c5fd',
-                          fontSize: '11.5px',
-                          fontWeight: 700,
-                          cursor: 'pointer',
-                        }}
+                        key={choice.id}
+                        onClick={() => handleSelectTaskCard(choice)}
+                        className="task-choice-card"
                       >
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-                          <Brain className="w-3.5 h-3.5" />
-                          <span>
-                            Thought{msg.thinkingDurationSec ? ` for ${msg.thinkingDurationSec}s` : ''}
-                          </span>
-                        </span>
-                        <span>{expandedThinkingIds[msg.id] ? '▴' : '▾'}</span>
-                      </button>
-                      {expandedThinkingIds[msg.id] && (
-                        <div
+                        <IconComponent className="task-choice-icon" />
+                        <span className="task-choice-title">{choice.title}</span>
+                        <span
                           style={{
-                            padding: '8px 12px 10px 12px',
-                            borderTop: '1px solid rgba(59, 130, 246, 0.18)',
-                            fontSize: '12px',
-                            color: '#cbd5e1',
-                            lineHeight: 1.55,
-                            whiteSpace: 'pre-wrap',
+                            marginTop: '6px',
+                            fontSize: '10px',
+                            fontWeight: 700,
+                            padding: '2px 8px',
+                            borderRadius: '999px',
+                            background: choice.agent === 'VISA_AGENT' ? 'rgba(245, 158, 11, 0.14)' : 'rgba(56, 189, 248, 0.12)',
+                            color: choice.agent === 'VISA_AGENT' ? '#fcd34d' : '#7dd3fc',
+                            border: choice.agent === 'VISA_AGENT' ? '1px solid rgba(245, 158, 11, 0.35)' : '1px solid rgba(56, 189, 248, 0.3)',
                           }}
                         >
-                          {msg.thinkingSummary}
+                          ${choice.costDollars} / submission
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Subtitle / Callout */}
+                <div className="hero-footer-callout">
+                  <div className="hero-footer-pill">
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>Powered by specialised AI agents</span>
+                  </div>
+                  <p className="hero-footer-caption">
+                    One WhatsApp number. Multiple specialised services. Built by{' '}
+                    <a
+                      href="https://www.empirelabs.digital/"
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ color: '#60a5fa', textDecoration: 'underline' }}
+                    >
+                      Empire Labs
+                    </a>
+                    .
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="chat-scroll-stream">
+                {messages.map((msg) => (
+                  <div
+                    key={msg.id}
+                    className={`chat-turn-container ${msg.direction === 'INBOUND' ? 'user' : 'assistant'}`}
+                  >
+                    <div
+                      className={`turn-avatar ${msg.direction === 'INBOUND' ? 'user' : 'assistant'
+                        }`}
+                    >
+                      {msg.direction === 'INBOUND' ? (
+                        currentUser?.photoURL ? (
+                          <img
+                            src={currentUser.photoURL}
+                            alt="User"
+                            className="w-full h-full rounded-full object-cover"
+                          />
+                        ) : (
+                          (currentUser?.displayName || currentUser?.email || 'U')[0].toUpperCase()
+                        )
+                      ) : (
+                        <NexoraIcon size={18} />
+                      )}
+                    </div>
+                    <div className="turn-content">
+                      {msg.direction === 'OUTBOUND' && msg.thinkingSummary && (
+                        <div
+                          style={{
+                            marginBottom: '10px',
+                            borderRadius: '10px',
+                            background: 'rgba(59, 130, 246, 0.08)',
+                            border: '1px solid rgba(59, 130, 246, 0.25)',
+                            overflow: 'hidden',
+                          }}
+                        >
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setExpandedThinkingIds((prev) => ({ ...prev, [msg.id]: !prev[msg.id] }))
+                            }
+                            style={{
+                              width: '100%',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              padding: '7px 11px',
+                              background: 'transparent',
+                              border: 'none',
+                              color: '#93c5fd',
+                              fontSize: '11.5px',
+                              fontWeight: 700,
+                              cursor: 'pointer',
+                            }}
+                          >
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                              <Brain className="w-3.5 h-3.5" />
+                              <span>
+                                Thought{msg.thinkingDurationSec ? ` for ${msg.thinkingDurationSec}s` : ''}
+                              </span>
+                            </span>
+                            <span>{expandedThinkingIds[msg.id] ? '▴' : '▾'}</span>
+                          </button>
+                          {expandedThinkingIds[msg.id] && (
+                            <div
+                              style={{
+                                padding: '8px 12px 10px 12px',
+                                borderTop: '1px solid rgba(59, 130, 246, 0.18)',
+                                fontSize: '12px',
+                                color: '#cbd5e1',
+                                lineHeight: 1.55,
+                                whiteSpace: 'pre-wrap',
+                              }}
+                            >
+                              {msg.thinkingSummary}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {Array.isArray(msg.attachedDocs) && msg.attachedDocs.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5 mb-2">
+                          {msg.attachedDocs.map((doc, dIdx) => (
+                            <span
+                              key={`${doc.fileName}-${dIdx}`}
+                              style={{
+                                fontSize: '11px',
+                                padding: '3px 9px',
+                                borderRadius: '999px',
+                                background: 'rgba(34, 211, 238, 0.1)',
+                                border: '1px solid rgba(34, 211, 238, 0.35)',
+                                color: '#a5f3fc',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '5px',
+                              }}
+                            >
+                              <FileText className="w-3 h-3" />
+                              <span>{doc.fileName}</span>
+                              <span style={{ opacity: 0.7 }}>({(doc.fileSizeBytes / 1024).toFixed(0)}KB)</span>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      <div
+                        dangerouslySetInnerHTML={{
+                          __html: formatMessageMarkdown(msg.content),
+                        }}
+                      />
+
+                      {/* Generated PDF Review Card (e.g. Compiled CV PDF) */}
+                      {msg.generatedPdf && (
+                        <div className="pdf-review-card">
+                          <div className="pdf-review-card-info">
+                            <FileText className="w-5 h-5 text-cyan-400 shrink-0" />
+                            <div style={{ minWidth: 0, flex: 1 }}>
+                              <div className="pdf-review-card-name" title={msg.generatedPdf.fileName}>
+                                {msg.generatedPdf.fileName}
+                              </div>
+                              <div style={{ fontSize: '11px', color: '#94a3b8' }}>
+                                PDF • {(msg.generatedPdf.fileSizeBytes / 1024).toFixed(1)} KB • Ready to review
+                              </div>
+                            </div>
+                          </div>
+                          <div className="pdf-review-card-actions">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setPdfEditPrompt('');
+                                setPreviewPdfDoc(msg.generatedPdf!);
+                              }}
+                              className="chat-action-btn primary"
+                              style={{ whiteSpace: 'nowrap' }}
+                            >
+                              <Eye className="w-4 h-4" />
+                              <span>Review & Edit PDF</span>
+                            </button>
+                            <a
+                              href={resolveApiUrl(msg.generatedPdf.downloadUrl)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="chat-action-btn"
+                              style={{ textDecoration: 'none', whiteSpace: 'nowrap' }}
+                              title="Open in new tab"
+                            >
+                              <Download className="w-4 h-4" />
+                            </a>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Interactive Action Buttons inside Turn (e.g. CV Intake / Approve & Submit) */}
+                      {msg.actions && msg.actions.length > 0 && (
+                        <div className="chat-actions-container">
+                          {msg.actions.map((act, i) => (
+                            <button
+                              key={i}
+                              onClick={() => {
+                                if (act.action === 'open_dossier') {
+                                  setShowDossierModal(true);
+                                } else if (act.action.startsWith('open_prereq:')) {
+                                  const key = act.action.split(':')[1] as
+                                    | 'employment'
+                                    | 'relocate'
+                                    | 'investors'
+                                    | 'scholarships';
+                                  setActivePrereqTask(key);
+                                } else if (act.action === 'approve_submit') {
+                                  const pdfName =
+                                    msg.generatedPdf?.fileName ||
+                                    activeConversation?.generatedPdf?.fileName ||
+                                    'Compiled Document PDF';
+                                  setConfirmModal({
+                                    title: 'Confirm & Submit Applications',
+                                    message: `You are about to submit "${pdfName}" on behalf of ${candidateName || 'your profile'} (${candidateRole || activeConversation?.title || 'Task'}). Once confirmed, Nexora AI will dispatch your document and applications to verified endpoints.`,
+                                    confirmLabel: 'Confirm & Submit',
+                                    danger: false,
+                                    onConfirm: () => {
+                                      setConfirmModal(null);
+                                      handleSendMessage(
+                                        `[Approved PDF: ${pdfName}]\nApproved. Please submit the applications now.`,
+                                        activeConvId || undefined,
+                                        activeConversation?.agentType || 'JOB_AGENT',
+                                      );
+                                    },
+                                  });
+                                } else if (act.action === 'confirm_apply') {
+                                  handleSendMessage("Looks good, search and apply", activeConvId || undefined, 'JOB_AGENT');
+                                } else if (act.action === 'draft_cv') {
+                                  const resolvedName = candidateName || currentUser?.displayName || 'Candidate';
+                                  const prompt = `${resolvedName} wants you to help apply for a job but doesn't have a CV yet. Please interview me step-by-step to understand what I do, my work experience, and my education so we can build a professional resume, and then search and apply for jobs.`;
+                                  handleSendMessage(prompt, activeConvId || undefined, 'JOB_AGENT');
+                                }
+                              }}
+                              className={`chat-action-btn ${act.primary ? 'primary' : ''}`}
+                            >
+                              {act.primary && <UploadCloud className="w-4 h-4" />}
+                              <span>{act.label}</span>
+                            </button>
+                          ))}
                         </div>
                       )}
                     </div>
-                  )}
-                  {Array.isArray(msg.attachedDocs) && msg.attachedDocs.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5 mb-2">
-                      {msg.attachedDocs.map((doc, dIdx) => (
-                        <span
-                          key={`${doc.fileName}-${dIdx}`}
-                          style={{
-                            fontSize: '11px',
-                            padding: '3px 9px',
-                            borderRadius: '999px',
-                            background: 'rgba(34, 211, 238, 0.1)',
-                            border: '1px solid rgba(34, 211, 238, 0.35)',
-                            color: '#a5f3fc',
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: '5px',
-                          }}
-                        >
-                          <FileText className="w-3 h-3" />
-                          <span>{doc.fileName}</span>
-                          <span style={{ opacity: 0.7 }}>({(doc.fileSizeBytes / 1024).toFixed(0)}KB)</span>
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                  <div
-                    dangerouslySetInnerHTML={{
-                      __html: formatMessageMarkdown(msg.content),
-                    }}
-                  />
+                  </div>
+                ))}
 
-                  {/* Generated PDF Review Card (e.g. Compiled CV PDF) */}
-                  {msg.generatedPdf && (
-                    <div className="pdf-review-card">
-                      <div className="pdf-review-card-info">
-                        <FileText className="w-5 h-5 text-cyan-400 shrink-0" />
-                        <div style={{ minWidth: 0, flex: 1 }}>
-                          <div className="pdf-review-card-name" title={msg.generatedPdf.fileName}>
-                            {msg.generatedPdf.fileName}
-                          </div>
-                          <div style={{ fontSize: '11px', color: '#94a3b8' }}>
-                            PDF • {(msg.generatedPdf.fileSizeBytes / 1024).toFixed(1)} KB • Ready to review
-                          </div>
-                        </div>
-                      </div>
-                      <div className="pdf-review-card-actions">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setPdfEditPrompt('');
-                            setPreviewPdfDoc(msg.generatedPdf!);
-                          }}
-                          className="chat-action-btn primary"
-                          style={{ whiteSpace: 'nowrap' }}
-                        >
-                          <Eye className="w-4 h-4" />
-                          <span>Review & Edit PDF</span>
-                        </button>
-                        <a
-                          href={resolveApiUrl(msg.generatedPdf.downloadUrl)}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="chat-action-btn"
-                          style={{ textDecoration: 'none', whiteSpace: 'nowrap' }}
-                          title="Open in new tab"
-                        >
-                          <Download className="w-4 h-4" />
-                        </a>
-                      </div>
+                {isSending && (
+                  <div className="chat-turn-container assistant">
+                    <div className="turn-avatar assistant">
+                      <NexoraIcon size={18} />
                     </div>
-                  )}
-
-                  {/* Interactive Action Buttons inside Turn (e.g. CV Intake / Approve & Submit) */}
-                  {msg.actions && msg.actions.length > 0 && (
-                    <div className="chat-actions-container">
-                      {msg.actions.map((act, i) => (
-                        <button
-                          key={i}
-                          onClick={() => {
-                            if (act.action === 'open_dossier') {
-                              setShowDossierModal(true);
-                            } else if (act.action.startsWith('open_prereq:')) {
-                              const key = act.action.split(':')[1] as
-                                | 'employment'
-                                | 'relocate'
-                                | 'investors'
-                                | 'scholarships';
-                              setActivePrereqTask(key);
-                            } else if (act.action === 'approve_submit') {
-                              const pdfName =
-                                msg.generatedPdf?.fileName ||
-                                activeConversation?.generatedPdf?.fileName ||
-                                'Compiled Document PDF';
-                              setConfirmModal({
-                                title: 'Confirm & Submit Applications',
-                                message: `You are about to submit "${pdfName}" on behalf of ${candidateName || 'your profile'} (${candidateRole || activeConversation?.title || 'Task'}). Once confirmed, Nexora AI will dispatch your document and applications to verified endpoints.`,
-                                confirmLabel: 'Confirm & Submit',
-                                danger: false,
-                                onConfirm: () => {
-                                  setConfirmModal(null);
-                                  handleSendMessage(
-                                    `[Approved PDF: ${pdfName}]\nApproved. Please submit the applications now.`,
-                                    activeConvId || undefined,
-                                    activeConversation?.agentType || 'JOB_AGENT',
-                                  );
-                                },
-                              });
-                            } else if (act.action === 'confirm_apply') {
-                              handleSendMessage("Looks good, search and apply", activeConvId || undefined, 'JOB_AGENT');
-                            } else if (act.action === 'draft_cv') {
-                              const resolvedName = candidateName || currentUser?.displayName || 'Candidate';
-                              const prompt = `${resolvedName} wants you to help apply for a job but doesn't have a CV yet. Please interview me step-by-step to understand what I do, my work experience, and my education so we can build a professional resume, and then search and apply for jobs.`;
-                              handleSendMessage(prompt, activeConvId || undefined, 'JOB_AGENT');
-                            }
-                          }}
-                          className={`chat-action-btn ${act.primary ? 'primary' : ''}`}
-                        >
-                          {act.primary && <UploadCloud className="w-4 h-4" />}
-                          <span>{act.label}</span>
-                        </button>
-                      ))}
+                    <div className="turn-content flex items-center gap-3">
+                      <div className="w-4 h-4 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
+                      <span className="text-xs text-slate-400 font-medium">
+                        Nexora AI is processing your request and scanning portals...
+                      </span>
                     </div>
-                  )}
-                </div>
-              </div>
-            ))}
-
-            {isSending && (
-              <div className="chat-turn-container assistant">
-                <div className="turn-avatar assistant">
-                  <NexoraIcon size={18} />
-                </div>
-                <div className="turn-content flex items-center gap-3">
-                  <div className="w-4 h-4 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
-                  <span className="text-xs text-slate-400 font-medium">
-                    Nexora AI is processing your request and scanning portals...
-                  </span>
-                </div>
+                  </div>
+                )}
+                <div ref={chatEndRef} />
               </div>
             )}
-            <div ref={chatEndRef} />
-          </div>
-        )}
 
-        {/* Floating Input Pill Bar (supports multi-document drag & drop) */}
-        <div
-          className="gpt-input-container"
-          onDragOver={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            if (!isDraggingChatFiles) setIsDraggingChatFiles(true);
-          }}
-          onDragLeave={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            if (!e.currentTarget.contains(e.relatedTarget as Node)) {
-              setIsDraggingChatFiles(false);
-            }
-          }}
-          onDrop={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            setIsDraggingChatFiles(false);
-            if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-              void handleChatFilesSelected(e.dataTransfer.files);
-            }
-          }}
-        >
-          <input
-            ref={chatDocInputRef}
-            type="file"
-            multiple
-            accept=".pdf,.txt,.md,.csv,.json,.doc,.docx,image/*"
-            style={{ display: 'none' }}
-            onChange={(e) => {
-              if (e.target.files && e.target.files.length > 0) {
-                void handleChatFilesSelected(e.target.files);
-                e.target.value = '';
-              }
-            }}
-          />
-
-          {chatAttachments.length > 0 && (
+            {/* Floating Input Pill Bar (supports multi-document drag & drop) */}
             <div
-              style={{
-                width: '100%',
-                maxWidth: '780px',
-                margin: '0 auto 8px auto',
-                display: 'flex',
-                flexWrap: 'wrap',
-                gap: '8px',
-                padding: '8px 12px',
-                borderRadius: '14px',
-                background: 'rgba(24, 24, 27, 0.92)',
-                border: '1px solid #334155',
+              className="gpt-input-container"
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (!isDraggingChatFiles) setIsDraggingChatFiles(true);
+              }}
+              onDragLeave={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                  setIsDraggingChatFiles(false);
+                }
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsDraggingChatFiles(false);
+                if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                  void handleChatFilesSelected(e.dataTransfer.files);
+                }
               }}
             >
-              {chatAttachments.map((att) => (
+              <input
+                ref={chatDocInputRef}
+                type="file"
+                multiple
+                accept=".pdf,.txt,.md,.csv,.json,.doc,.docx,image/*"
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  if (e.target.files && e.target.files.length > 0) {
+                    void handleChatFilesSelected(e.target.files);
+                    e.target.value = '';
+                  }
+                }}
+              />
+
+              {chatAttachments.length > 0 && (
                 <div
-                  key={att.id}
                   style={{
+                    width: '100%',
+                    maxWidth: '780px',
+                    margin: '0 auto 8px auto',
                     display: 'flex',
-                    flexDirection: 'column',
-                    gap: '4px',
-                    padding: '6px 10px',
-                    borderRadius: '10px',
-                    background: '#1e293b',
-                    border: '1px solid #475569',
-                    maxWidth: '280px',
+                    flexWrap: 'wrap',
+                    gap: '8px',
+                    padding: '8px 12px',
+                    borderRadius: '14px',
+                    background: 'rgba(24, 24, 27, 0.92)',
+                    border: '1px solid #334155',
                   }}
                 >
-                  <div className="flex items-center gap-2">
-                    <FileText className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
-                    <span
-                      className="text-xs font-semibold text-white truncate"
-                      title={att.fileName}
-                      style={{ maxWidth: '150px' }}
-                    >
-                      {att.fileName}
-                    </span>
-                    <span className="text-[10px] text-slate-400 shrink-0">
-                      {(att.fileSizeBytes / 1024).toFixed(0)}KB
-                    </span>
-                    {att.extracting ? (
-                      <span className="text-[10px] text-cyan-300">Extracting...</span>
-                    ) : att.extractedText ? (
-                      <button
-                        type="button"
-                        onClick={() => setExpandedDocId(expandedDocId === att.id ? null : att.id)}
-                        style={{
-                          fontSize: '10px',
-                          color: '#34d399',
-                          background: 'transparent',
-                          border: 'none',
-                          cursor: 'pointer',
-                          padding: 0,
-                        }}
-                        title="Preview extracted text"
-                      >
-                        ✓ {att.extractedText.length} chars
-                      </button>
-                    ) : null}
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setChatAttachments((prev) => prev.filter((item) => item.id !== att.id))
-                      }
-                      style={{
-                        background: 'transparent',
-                        border: 'none',
-                        color: '#94a3b8',
-                        cursor: 'pointer',
-                        padding: 0,
-                        display: 'flex',
-                      }}
-                      title="Remove document"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                  {expandedDocId === att.id && att.extractedText && (
+                  {chatAttachments.map((att) => (
                     <div
+                      key={att.id}
                       style={{
-                        fontSize: '11px',
-                        color: '#cbd5e1',
-                        background: '#0f172a',
-                        padding: '6px 8px',
-                        borderRadius: '6px',
-                        maxHeight: '90px',
-                        overflowY: 'auto',
-                        whiteSpace: 'pre-wrap',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '4px',
+                        padding: '6px 10px',
+                        borderRadius: '10px',
+                        background: '#1e293b',
+                        border: '1px solid #475569',
+                        maxWidth: '280px',
                       }}
                     >
-                      {att.extractedText.slice(0, 600)}
-                      {att.extractedText.length > 600 ? '...' : ''}
+                      <div className="flex items-center gap-2">
+                        <FileText className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                        <span
+                          className="text-xs font-semibold text-white truncate"
+                          title={att.fileName}
+                          style={{ maxWidth: '150px' }}
+                        >
+                          {att.fileName}
+                        </span>
+                        <span className="text-[10px] text-slate-400 shrink-0">
+                          {(att.fileSizeBytes / 1024).toFixed(0)}KB
+                        </span>
+                        {att.extracting ? (
+                          <span className="text-[10px] text-cyan-300">Extracting...</span>
+                        ) : att.extractedText ? (
+                          <button
+                            type="button"
+                            onClick={() => setExpandedDocId(expandedDocId === att.id ? null : att.id)}
+                            style={{
+                              fontSize: '10px',
+                              color: '#34d399',
+                              background: 'transparent',
+                              border: 'none',
+                              cursor: 'pointer',
+                              padding: 0,
+                            }}
+                            title="Preview extracted text"
+                          >
+                            ✓ {att.extractedText.length} chars
+                          </button>
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setChatAttachments((prev) => prev.filter((item) => item.id !== att.id))
+                          }
+                          style={{
+                            background: 'transparent',
+                            border: 'none',
+                            color: '#94a3b8',
+                            cursor: 'pointer',
+                            padding: 0,
+                            display: 'flex',
+                          }}
+                          title="Remove document"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                      {expandedDocId === att.id && att.extractedText && (
+                        <div
+                          style={{
+                            fontSize: '11px',
+                            color: '#cbd5e1',
+                            background: '#0f172a',
+                            padding: '6px 8px',
+                            borderRadius: '6px',
+                            maxHeight: '90px',
+                            overflowY: 'auto',
+                            whiteSpace: 'pre-wrap',
+                          }}
+                        >
+                          {att.extractedText.slice(0, 600)}
+                          {att.extractedText.length > 600 ? '...' : ''}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div
+                className="floating-input-pill"
+                style={
+                  isDraggingChatFiles
+                    ? {
+                      borderColor: '#22d3ee',
+                      boxShadow: '0 0 0 2px rgba(34, 211, 238, 0.3)',
+                    }
+                    : undefined
+                }
+              >
+                <div className="plus-menu-container">
+                  <button
+                    onClick={() => setShowPlusMenu(!showPlusMenu)}
+                    className="input-plus-btn"
+                    title="Add documents or tasks"
+                  >
+                    <Plus className="w-4 h-4" />
+                  </button>
+
+                  {showPlusMenu && (
+                    <div className="plus-menu-popover">
+                      <button
+                        onClick={() => {
+                          setShowPlusMenu(false);
+                          chatDocInputRef.current?.click();
+                        }}
+                        className="plus-menu-item"
+                      >
+                        <UploadCloud className="w-4 h-4 text-emerald-400" />
+                        <span>Attach Documents (Extract & Email)</span>
+                      </button>
+                      <button
+                        onClick={() => {
+                          setShowPlusMenu(false);
+                          setShowDossierModal(true);
+                        }}
+                        className="plus-menu-item"
+                      >
+                        <Briefcase className="w-4 h-4 text-cyan-400" />
+                        <span>Upload CV & Profile</span>
+                      </button>
+                      <button
+                        onClick={() => {
+                          setShowPlusMenu(false);
+                          setShowDocModal(true);
+                        }}
+                        className="plus-menu-item"
+                      >
+                        <FileText className="w-4 h-4 text-indigo-400" />
+                        <span>Generate Business Plan</span>
+                      </button>
                     </div>
                   )}
                 </div>
-              ))}
-            </div>
-          )}
 
-          <div
-            className="floating-input-pill"
-            style={
-              isDraggingChatFiles
-                ? {
-                  borderColor: '#22d3ee',
-                  boxShadow: '0 0 0 2px rgba(34, 211, 238, 0.3)',
-                }
-                : undefined
-            }
-          >
-            <div className="plus-menu-container">
-              <button
-                onClick={() => setShowPlusMenu(!showPlusMenu)}
-                className="input-plus-btn"
-                title="Add documents or tasks"
-              >
-                <Plus className="w-4 h-4" />
-              </button>
+                <textarea
+                  ref={textareaRef}
+                  value={inputText}
+                  onChange={(e) => setInputText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      handleSendMessage();
+                    }
+                  }}
+                  placeholder={
+                    isRecording
+                      ? 'Listening... speak now'
+                      : deepThinkMode
+                        ? 'Ask Nexora AI (Deep Thinking enabled)...'
+                        : 'Ask Nexora AI...'
+                  }
+                  className="floating-textarea"
+                  rows={1}
+                />
 
-              {showPlusMenu && (
-                <div className="plus-menu-popover">
+                <div className="input-right-controls">
                   <button
-                    onClick={() => {
-                      setShowPlusMenu(false);
-                      chatDocInputRef.current?.click();
-                    }}
-                    className="plus-menu-item"
+                    type="button"
+                    onClick={() => setDeepThinkMode((prev) => !prev)}
+                    className="pill-think-btn"
+                    style={
+                      deepThinkMode
+                        ? {
+                          background: 'rgba(37, 99, 235, 0.25)',
+                          borderColor: '#3b82f6',
+                          color: '#93c5fd',
+                        }
+                        : undefined
+                    }
+                    title={deepThinkMode ? 'Deep Thinking is ON (click to turn off)' : 'Enable Deep Thinking reasoning'}
                   >
-                    <UploadCloud className="w-4 h-4 text-emerald-400" />
-                    <span>Attach Documents (Extract & Email)</span>
+                    <Brain className="w-3.5 h-3.5" />
+                    <span>{deepThinkMode ? 'Think ON' : 'Think'}</span>
                   </button>
+
                   <button
+                    type="button"
                     onClick={() => {
-                      setShowPlusMenu(false);
-                      setShowDossierModal(true);
+                      if (isRecording) {
+                        speechRecognitionRef.current?.stop();
+                        setIsRecording(false);
+                        return;
+                      }
+                      const SpeechRec =
+                        (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+                      if (!SpeechRec) {
+                        setVoiceStatusMsg('Voice dictation requires Chrome, Edge, or Safari with SpeechRecognition.');
+                        setTimeout(() => setVoiceStatusMsg(null), 4000);
+                        return;
+                      }
+                      try {
+                        const recognition = new SpeechRec();
+                        recognition.continuous = true;
+                        recognition.interimResults = true;
+                        recognition.lang = 'en-US';
+                        const baseText = inputText.trim() ? `${inputText.trim()} ` : '';
+                        recognition.onresult = (event: any) => {
+                          let transcript = '';
+                          for (let i = 0; i < event.results.length; i++) {
+                            transcript += event.results[i][0].transcript;
+                          }
+                          setInputText(`${baseText}${transcript}`);
+                        };
+                        recognition.onerror = (err: any) => {
+                          setIsRecording(false);
+                          setVoiceStatusMsg(
+                            err?.error === 'not-allowed'
+                              ? 'Microphone permission was denied. Please allow mic access in your browser.'
+                              : `Voice input stopped (${err?.error || 'error'}).`,
+                          );
+                          setTimeout(() => setVoiceStatusMsg(null), 4000);
+                        };
+                        recognition.onend = () => {
+                          setIsRecording(false);
+                        };
+                        speechRecognitionRef.current = recognition;
+                        recognition.start();
+                        setVoiceStatusMsg(null);
+                        setIsRecording(true);
+                      } catch {
+                        setIsRecording(false);
+                        setVoiceStatusMsg('Could not start microphone dictation.');
+                      }
                     }}
-                    className="plus-menu-item"
+                    className="pill-mic-btn"
+                    style={
+                      isRecording
+                        ? {
+                          background: 'rgba(239, 68, 68, 0.25)',
+                          borderColor: '#ef4444',
+                          color: '#fca5a5',
+                        }
+                        : undefined
+                    }
+                    title={isRecording ? 'Stop voice recording' : 'Start voice input'}
                   >
-                    <Briefcase className="w-4 h-4 text-cyan-400" />
-                    <span>Upload CV & Profile</span>
+                    <Mic className={`w-4 h-4 ${isRecording ? 'animate-pulse' : ''}`} />
                   </button>
+
                   <button
-                    onClick={() => {
-                      setShowPlusMenu(false);
-                      setShowDocModal(true);
-                    }}
-                    className="plus-menu-item"
+                    onClick={() => handleSendMessage()}
+                    disabled={(!inputText.trim() && chatAttachments.length === 0) || isSending}
+                    className="pill-send-btn"
+                    title="Send"
                   >
-                    <FileText className="w-4 h-4 text-indigo-400" />
-                    <span>Generate Business Plan</span>
+                    <ArrowUp className="w-4 h-4" />
                   </button>
                 </div>
+              </div>
+
+              {voiceStatusMsg && (
+                <div style={{ textAlign: 'center', fontSize: '11px', color: '#fca5a5', marginTop: '4px' }}>
+                  {voiceStatusMsg}
+                </div>
               )}
+
+              <div className="input-disclaimer-text">
+                Nexora AI can make mistakes. Verify important financial and legal submissions.
+              </div>
             </div>
-
-            <textarea
-              ref={textareaRef}
-              value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault();
-                  handleSendMessage();
-                }
-              }}
-              placeholder={
-                isRecording
-                  ? 'Listening... speak now'
-                  : deepThinkMode
-                    ? 'Ask Nexora AI (Deep Thinking enabled)...'
-                    : 'Ask Nexora AI...'
-              }
-              className="floating-textarea"
-              rows={1}
-            />
-
-            <div className="input-right-controls">
-              <button
-                type="button"
-                onClick={() => setDeepThinkMode((prev) => !prev)}
-                className="pill-think-btn"
-                style={
-                  deepThinkMode
-                    ? {
-                      background: 'rgba(37, 99, 235, 0.25)',
-                      borderColor: '#3b82f6',
-                      color: '#93c5fd',
-                    }
-                    : undefined
-                }
-                title={deepThinkMode ? 'Deep Thinking is ON (click to turn off)' : 'Enable Deep Thinking reasoning'}
-              >
-                <Brain className="w-3.5 h-3.5" />
-                <span>{deepThinkMode ? 'Think ON' : 'Think'}</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  if (isRecording) {
-                    speechRecognitionRef.current?.stop();
-                    setIsRecording(false);
-                    return;
-                  }
-                  const SpeechRec =
-                    (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-                  if (!SpeechRec) {
-                    setVoiceStatusMsg('Voice dictation requires Chrome, Edge, or Safari with SpeechRecognition.');
-                    setTimeout(() => setVoiceStatusMsg(null), 4000);
-                    return;
-                  }
-                  try {
-                    const recognition = new SpeechRec();
-                    recognition.continuous = true;
-                    recognition.interimResults = true;
-                    recognition.lang = 'en-US';
-                    const baseText = inputText.trim() ? `${inputText.trim()} ` : '';
-                    recognition.onresult = (event: any) => {
-                      let transcript = '';
-                      for (let i = 0; i < event.results.length; i++) {
-                        transcript += event.results[i][0].transcript;
-                      }
-                      setInputText(`${baseText}${transcript}`);
-                    };
-                    recognition.onerror = (err: any) => {
-                      setIsRecording(false);
-                      setVoiceStatusMsg(
-                        err?.error === 'not-allowed'
-                          ? 'Microphone permission was denied. Please allow mic access in your browser.'
-                          : `Voice input stopped (${err?.error || 'error'}).`,
-                      );
-                      setTimeout(() => setVoiceStatusMsg(null), 4000);
-                    };
-                    recognition.onend = () => {
-                      setIsRecording(false);
-                    };
-                    speechRecognitionRef.current = recognition;
-                    recognition.start();
-                    setVoiceStatusMsg(null);
-                    setIsRecording(true);
-                  } catch {
-                    setIsRecording(false);
-                    setVoiceStatusMsg('Could not start microphone dictation.');
-                  }
-                }}
-                className="pill-mic-btn"
-                style={
-                  isRecording
-                    ? {
-                      background: 'rgba(239, 68, 68, 0.25)',
-                      borderColor: '#ef4444',
-                      color: '#fca5a5',
-                    }
-                    : undefined
-                }
-                title={isRecording ? 'Stop voice recording' : 'Start voice input'}
-              >
-                <Mic className={`w-4 h-4 ${isRecording ? 'animate-pulse' : ''}`} />
-              </button>
-
-              <button
-                onClick={() => handleSendMessage()}
-                disabled={(!inputText.trim() && chatAttachments.length === 0) || isSending}
-                className="pill-send-btn"
-                title="Send"
-              >
-                <ArrowUp className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
-
-          {voiceStatusMsg && (
-            <div style={{ textAlign: 'center', fontSize: '11px', color: '#fca5a5', marginTop: '4px' }}>
-              {voiceStatusMsg}
-            </div>
-          )}
-
-          <div className="input-disclaimer-text">
-            Nexora AI can make mistakes. Verify important financial and legal submissions.
-          </div>
-        </div>
+          </>
+        )}
       </main>
 
       {/* ==================== 3. TASKS DRAWER ==================== */}
@@ -3175,7 +3815,7 @@ export const App: React.FC = () => {
           employment: {
             title: 'Find Employment — Prerequisites',
             subtitle: 'Provide your personal details and CV, or ask Nexora AI to draft your CV on your behalf.',
-            docs: [{ key: 'cv', label: 'CV / Resume (PDF or Word)', canDraft: true }],
+            docs: [{ key: 'cv', label: 'CV (PDF or Word)', canDraft: true }],
             draftPlaceholder: 'Share your job title, years of experience, companies, tech/skills, and education so AI can draft your CV...',
           },
           relocate: {
@@ -3212,7 +3852,7 @@ export const App: React.FC = () => {
         const anyDraftSelected = metaMap.docs.some((d) => prereqDocs[d.key]?.draftRequested);
 
         return (
-          <div className="dossier-modal-overlay" onClick={() => setActivePrereqTask(null)}>
+          <div className="dossier-modal-overlay" onClick={() => { setPendingAssignmentPrereqId(null); setActivePrereqTask(null); }}>
             <div
               className="dossier-modal-card"
               onClick={(e) => e.stopPropagation()}
@@ -3223,7 +3863,7 @@ export const App: React.FC = () => {
                   <Sparkles className="w-5 h-5 text-cyan-400" />
                   <h3 className="font-bold text-base text-white">{metaMap.title}</h3>
                 </div>
-                <button onClick={() => setActivePrereqTask(null)} className="sidebar-icon-btn">
+                <button onClick={() => { setPendingAssignmentPrereqId(null); setActivePrereqTask(null); }} className="sidebar-icon-btn">
                   <X className="w-4 h-4" />
                 </button>
               </div>
@@ -3423,6 +4063,20 @@ export const App: React.FC = () => {
                             </div>
                           </div>
                           <div className="prereq-doc-actions">
+                            {docItem.key === 'cv' && docState.fileName?.toLowerCase().endsWith('.pdf') && (
+                              <a
+                                href={resolveApiUrl(
+                                  docState.downloadUrl || `/api/v1/documents/download/${encodeURIComponent(docState.fileName)}`,
+                                )}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="prereq-doc-btn"
+                                style={{ textDecoration: 'none' }}
+                              >
+                                <Eye className="w-3.5 h-3.5 text-emerald-400" />
+                                <span>View PDF</span>
+                              </a>
+                            )}
                             <label className="prereq-doc-btn">
                               <UploadCloud className="w-3.5 h-3.5 text-cyan-400" />
                               <span>{docState.fileName ? 'Replace File' : 'Upload File'}</span>
@@ -3453,6 +4107,9 @@ export const App: React.FC = () => {
                     })}
                   </div>
                 </div>
+
+                {/* Attach Assessment Transcript & Supporting Documents */}
+                {!pendingAssignmentPrereqId && renderAttachmentSelector(false)}
 
                 {/* Info for Document Generation / Drafting */}
                 <div>
@@ -3529,17 +4186,19 @@ export const App: React.FC = () => {
                     style={{ flex: 1 }}
                   >
                     <Check className="w-4 h-4" />
-                    <span>Prepare for Review</span>
+                    <span>{pendingAssignmentPrereqId ? 'Save Assignment Prerequisites' : 'Prepare for Review'}</span>
                   </button>
-                  <button
-                    type="button"
-                    onClick={(e) => handleSubmitPrerequisites(e, true)}
-                    className="chat-action-btn"
-                    style={{ padding: '0 14px', whiteSpace: 'nowrap' }}
-                    title="Let AI interview you step-by-step in chat"
-                  >
-                    <span>Interview Me</span>
-                  </button>
+                  {!pendingAssignmentPrereqId && (
+                    <button
+                      type="button"
+                      onClick={(e) => handleSubmitPrerequisites(e, true)}
+                      className="chat-action-btn"
+                      style={{ padding: '0 14px', whiteSpace: 'nowrap' }}
+                      title="Let AI interview you step-by-step in chat"
+                    >
+                      <span>Interview Me</span>
+                    </button>
+                  )}
                 </div>
               </form>
             </div>
@@ -4237,6 +4896,9 @@ export const App: React.FC = () => {
                   </div>
                 </div>
 
+                {/* Optional Assessment Transcript & Supporting Documents Selector */}
+                {renderAttachmentSelector(true)}
+
                 <button
                   type="button"
                   onClick={() => {
@@ -4280,6 +4942,34 @@ export const App: React.FC = () => {
       )}
 
       {/* F. Confirmation Modal (Logout, Delete Task, Clear All, Submit) */}
+      <SupportingDocsModal
+        isOpen={showSupportingDocsModal}
+        userUid={currentUser?.uid || 'guest-user'}
+        currentCv={{
+          fileName: prereqDocs.cv?.fileName || uploadedCvFile?.name,
+          fileSize: prereqDocs.cv?.fileSize || uploadedCvFile?.size,
+          downloadUrl: prereqDocs.cv?.downloadUrl,
+        }}
+        apiFetch={apiFetch}
+        resolveApiUrl={resolveApiUrl}
+        onClose={() => setShowSupportingDocsModal(false)}
+        onUpdated={(docs) => setSupportingDocs(docs)}
+        onCvChange={(cv) => {
+          setUploadedCvFile(cv ? { name: cv.fileName, size: cv.fileSize } : null);
+          setPrereqDocs((prev) => ({
+            ...prev,
+            cv: cv
+              ? {
+                fileName: cv.fileName,
+                fileSize: cv.fileSize,
+                downloadUrl: cv.downloadUrl,
+                draftRequested: false,
+              }
+              : { draftRequested: false },
+          }));
+        }}
+      />
+
       {confirmModal && (
         <div
           className="auth-modal-overlay"
@@ -4595,7 +5285,13 @@ export const App: React.FC = () => {
                           </div>
                         )}
                         <div style={{ fontSize: '13.5px', whiteSpace: 'pre-wrap', lineHeight: 1.48, color: '#e9edef' }}>
-                          {msg.body}
+                          {String(msg.body || '')
+                            .replace(/\s*-{2,}\s*On\s+[\s\S]*?\bwrote\b[\s\S]*$/i, '')
+                            .replace(/\s*-{2,}\s*Original Message\s*-{2,}[\s\S]*$/i, '')
+                            .replace(/\s*On\s+(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[\s\S]*?\bwrote:\s*[\s\S]*$/i, '')
+                            .replace(/\s*From:\s*[\s\S]*?\b(?:Sent|Date)\s*:\s*[\s\S]*$/i, '')
+                            .replace(/\s*Application Submission\s*[•·-]\s*Ref\s+SUB-[\s\S]*$/i, '')
+                            .trim()}
                         </div>
                         {Array.isArray(msg.attachments) && msg.attachments.length > 0 && (
                           <div className="flex flex-wrap gap-1.5 mt-2">
