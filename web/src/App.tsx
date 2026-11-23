@@ -4259,46 +4259,196 @@ export const App: React.FC = () => {
           </div>
         </div>
       )}
-      {/* G. Submission Follow-Up & IMAP Thread Modal */}
+      {/* G. Submission Follow-Up Chat Modal (WhatsApp-style UI) */}
       {activeThreadTask && (
         <div
           className="auth-modal-overlay"
-          onClick={() => setActiveThreadTask(null)}
+          onClick={() => {
+            setReplyAttachments([]);
+            setActiveThreadTask(null);
+          }}
           style={{ zIndex: 1120 }}
         >
           <div
             className="auth-modal-card"
             onClick={(e) => e.stopPropagation()}
-            style={{ maxWidth: '640px', width: '94vw', maxHeight: '88vh', display: 'flex', flexDirection: 'column', padding: '22px' }}
+            onDragOver={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              if (!isDraggingReplyFiles) setIsDraggingReplyFiles(true);
+            }}
+            onDragLeave={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                setIsDraggingReplyFiles(false);
+              }
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setIsDraggingReplyFiles(false);
+              if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                void handleReplyFilesSelected(e.dataTransfer.files);
+              }
+            }}
+            style={{
+              maxWidth: '540px',
+              width: '94vw',
+              height: '84vh',
+              maxHeight: '720px',
+              display: 'flex',
+              flexDirection: 'column',
+              padding: 0,
+              overflow: 'hidden',
+              background: '#0b141a',
+              border: isDraggingReplyFiles ? '2px solid #00a884' : '1px solid #233138',
+              borderRadius: '18px',
+              boxShadow: '0 24px 60px rgba(0, 0, 0, 0.7)',
+            }}
           >
-            <div className="flex items-center justify-between" style={{ marginBottom: '12px', borderBottom: '1px solid #2e2e2e', paddingBottom: '10px' }}>
-              <div>
-                <h3 className="font-bold text-base text-white" style={{ margin: 0 }}>
-                  {activeThreadTask.targetName} — Messages & Replies
-                </h3>
-                <span className="text-xs text-slate-400">
-                  Receipt: {activeThreadTask.receiptId} • {activeThreadTask.contactEmail || 'Portal'}
-                </span>
+            <input
+              ref={replyDocInputRef}
+              type="file"
+              multiple
+              accept=".pdf,.txt,.md,.csv,.json,.doc,.docx,image/*"
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                if (e.target.files && e.target.files.length > 0) {
+                  void handleReplyFilesSelected(e.target.files);
+                  e.target.value = '';
+                }
+              }}
+            />
+
+            {/* WhatsApp-style Top Bar */}
+            <div
+              style={{
+                background: '#202c33',
+                padding: '12px 16px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '12px',
+                borderBottom: '1px solid #2a3942',
+              }}
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <div
+                  style={{
+                    width: '40px',
+                    height: '40px',
+                    borderRadius: '50%',
+                    background: 'linear-gradient(135deg, #00a884, #0284c7)',
+                    color: '#ffffff',
+                    fontWeight: 800,
+                    fontSize: '15px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexShrink: 0,
+                    position: 'relative',
+                  }}
+                >
+                  {(activeThreadTask.targetName || 'N').trim()[0].toUpperCase()}
+                  <span
+                    style={{
+                      position: 'absolute',
+                      bottom: '1px',
+                      right: '1px',
+                      width: '10px',
+                      height: '10px',
+                      borderRadius: '50%',
+                      background: '#25d366',
+                      border: '2px solid #202c33',
+                    }}
+                  />
+                </div>
+                <div className="min-w-0">
+                  <div className="font-bold text-sm text-white truncate" style={{ lineHeight: 1.25 }}>
+                    {activeThreadTask.targetName}
+                  </div>
+                  <div className="text-[11px] truncate" style={{ color: '#8696a0' }}>
+                    {isPollingReplies ? 'checking for new messages...' : `online • Ref ${activeThreadTask.receiptId}`}
+                  </div>
+                </div>
               </div>
-              <div className="flex items-center gap-2">
+
+              <div className="flex items-center gap-1.5 shrink-0">
                 <button
                   onClick={fetchSubmissionReplies}
                   disabled={isPollingReplies}
-                  className="chat-action-btn"
-                  style={{ padding: '6px 10px', fontSize: '11px' }}
+                  title="Check for new replies"
+                  style={{
+                    width: '34px',
+                    height: '34px',
+                    borderRadius: '50%',
+                    background: 'transparent',
+                    border: 'none',
+                    color: '#aebac1',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    cursor: 'pointer',
+                  }}
                 >
-                  {isPollingReplies ? 'Checking IMAP...' : 'Refresh Inbox'}
+                  <RefreshCw className={`w-4 h-4 ${isPollingReplies ? 'animate-spin text-emerald-400' : ''}`} />
                 </button>
                 <button
-                  onClick={() => setActiveThreadTask(null)}
-                  className="sidebar-icon-btn"
+                  onClick={() => {
+                    setReplyAttachments([]);
+                    setActiveThreadTask(null);
+                  }}
+                  title="Close chat"
+                  style={{
+                    width: '34px',
+                    height: '34px',
+                    borderRadius: '50%',
+                    background: 'transparent',
+                    border: 'none',
+                    color: '#aebac1',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    cursor: 'pointer',
+                  }}
                 >
                   <X className="w-4 h-4" />
                 </button>
               </div>
             </div>
 
-            <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '14px', padding: '8px 6px', background: '#141414', borderRadius: '10px', border: '1px solid #262626' }}>
+            {/* WhatsApp-style Chat Wallpaper & Message Stream */}
+            <div
+              style={{
+                flex: 1,
+                overflowY: 'auto',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '8px',
+                padding: '14px 16px',
+                backgroundColor: '#0b141a',
+                backgroundImage:
+                  'radial-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px)',
+                backgroundSize: '18px 18px',
+              }}
+            >
+              <div
+                style={{
+                  alignSelf: 'center',
+                  background: '#182229',
+                  color: '#8696a0',
+                  fontSize: '11px',
+                  padding: '5px 12px',
+                  borderRadius: '8px',
+                  marginBottom: '6px',
+                  textAlign: 'center',
+                  maxWidth: '90%',
+                }}
+              >
+                Direct message thread with <strong style={{ color: '#d1d7db' }}>{activeThreadTask.targetName}</strong>
+              </div>
+
               {(() => {
                 const thread = [
                   ...outboundThreadMsgs.filter((m) => m.receiptId === activeThreadTask.receiptId),
@@ -4307,8 +4457,20 @@ export const App: React.FC = () => {
 
                 if (thread.length === 0) {
                   return (
-                    <div className="text-xs text-slate-400" style={{ padding: '28px 14px', textAlign: 'center' }}>
-                      No replies received for <strong>{activeThreadTask.targetName}</strong> yet. Send a follow-up message below!
+                    <div
+                      style={{
+                        margin: 'auto',
+                        textAlign: 'center',
+                        maxWidth: '280px',
+                        padding: '18px 16px',
+                        borderRadius: '14px',
+                        background: 'rgba(32, 44, 51, 0.72)',
+                        color: '#aebac1',
+                        fontSize: '12.5px',
+                        lineHeight: 1.5,
+                      }}
+                    >
+                      Say hello to <strong style={{ color: '#e9edef' }}>{activeThreadTask.targetName}</strong>! Messages and attachments sent here go straight to them, and their replies appear right here.
                     </div>
                   );
                 }
@@ -4334,38 +4496,35 @@ export const App: React.FC = () => {
                     >
                       <div
                         style={{
-                          maxWidth: '78%',
-                          padding: '10px 14px',
-                          borderRadius: isOutbound ? '16px 16px 4px 16px' : '16px 16px 16px 4px',
+                          maxWidth: '80%',
+                          padding: '8px 12px 6px 12px',
+                          borderRadius: isOutbound ? '12px 2px 12px 12px' : '2px 12px 12px 12px',
                           background: isOutbound
-                            ? 'linear-gradient(135deg, #2563eb, #1d4ed8)'
+                            ? '#005c4b'
                             : msg.isInterview
-                              ? 'rgba(16, 185, 129, 0.14)'
-                              : '#242424',
-                          border: isOutbound
-                            ? '1px solid #3b82f6'
-                            : msg.isInterview
-                              ? '1px solid rgba(16, 185, 129, 0.45)'
-                              : '1px solid #333333',
-                          color: '#f8fafc',
+                              ? '#12382c'
+                              : '#202c33',
+                          border: msg.isInterview && !isOutbound
+                            ? '1px solid rgba(37, 211, 102, 0.45)'
+                            : 'none',
+                          boxShadow: '0 1px 2px rgba(0, 0, 0, 0.3)',
+                          color: '#e9edef',
                         }}
                       >
-                        <div className="flex items-center justify-between gap-3" style={{ marginBottom: '4px' }}>
-                          <span
+                        {!isOutbound && (
+                          <div
                             style={{
                               fontSize: '11px',
                               fontWeight: 700,
-                              color: isOutbound ? '#dbeafe' : msg.isInterview ? '#6ee7b7' : '#93c5fd',
+                              color: msg.isInterview ? '#25d366' : '#53bdeb',
+                              marginBottom: '3px',
                             }}
                           >
                             {cleanSender}
-                            {msg.isInterview ? ' • 🎉 Interview' : ''}
-                          </span>
-                          <span style={{ fontSize: '10px', color: isOutbound ? '#bfdbfe' : '#94a3b8' }}>
-                            {shortTime}
-                          </span>
-                        </div>
-                        <div style={{ fontSize: '13px', whiteSpace: 'pre-wrap', lineHeight: 1.55, color: '#f1f5f9' }}>
+                            {msg.isInterview ? ' • 🎉 Interview Invite' : ''}
+                          </div>
+                        )}
+                        <div style={{ fontSize: '13.5px', whiteSpace: 'pre-wrap', lineHeight: 1.48, color: '#e9edef' }}>
                           {msg.body}
                         </div>
                         {Array.isArray(msg.attachments) && msg.attachments.length > 0 && (
@@ -4375,22 +4534,39 @@ export const App: React.FC = () => {
                                 key={`${att.fileName}-${attIdx}`}
                                 style={{
                                   fontSize: '11px',
-                                  padding: '2px 8px',
-                                  borderRadius: '999px',
-                                  background: 'rgba(15, 23, 42, 0.55)',
-                                  border: '1px solid rgba(255,255,255,0.2)',
-                                  color: '#e2e8f0',
+                                  padding: '3px 8px',
+                                  borderRadius: '8px',
+                                  background: 'rgba(0, 0, 0, 0.25)',
+                                  color: '#e9edef',
                                   display: 'inline-flex',
                                   alignItems: 'center',
-                                  gap: '4px',
+                                  gap: '5px',
                                 }}
                               >
-                                <FileText className="w-3 h-3" />
+                                <FileText className="w-3 h-3 text-emerald-300" />
                                 {att.fileName}
                               </span>
                             ))}
                           </div>
                         )}
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'flex-end',
+                            gap: '4px',
+                            marginTop: '3px',
+                            fontSize: '10px',
+                            color: isOutbound ? 'rgba(233, 237, 239, 0.72)' : '#8696a0',
+                          }}
+                        >
+                          <span>{shortTime}</span>
+                          {isOutbound && (
+                            <span style={{ color: '#53bdeb', fontWeight: 700, letterSpacing: '-2px', fontSize: '11px' }}>
+                              ✓✓
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
                   );
@@ -4398,155 +4574,150 @@ export const App: React.FC = () => {
               })()}
             </div>
 
-            <div
-              style={{
-                borderTop: '1px solid #2e2e2e',
-                paddingTop: '12px',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '8px',
-              }}
-              onDragOver={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                if (!isDraggingReplyFiles) setIsDraggingReplyFiles(true);
-              }}
-              onDragLeave={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                if (!e.currentTarget.contains(e.relatedTarget as Node)) {
-                  setIsDraggingReplyFiles(false);
-                }
-              }}
-              onDrop={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setIsDraggingReplyFiles(false);
-                if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-                  void handleReplyFilesSelected(e.dataTransfer.files);
-                }
-              }}
-            >
-              <input
-                ref={replyDocInputRef}
-                type="file"
-                multiple
-                accept=".pdf,.txt,.md,.csv,.json,.doc,.docx,image/*"
-                style={{ display: 'none' }}
-                onChange={(e) => {
-                  if (e.target.files && e.target.files.length > 0) {
-                    void handleReplyFilesSelected(e.target.files);
-                    e.target.value = '';
-                  }
-                }}
-              />
-
+            {/* Attached Files Strip (above WhatsApp Composer) */}
+            {replyAttachments.length > 0 && (
               <div
-                onClick={() => replyDocInputRef.current?.click()}
                 style={{
-                  border: isDraggingReplyFiles ? '1px dashed #22d3ee' : '1px dashed #475569',
-                  background: isDraggingReplyFiles ? 'rgba(34, 211, 238, 0.08)' : '#1e1e22',
-                  borderRadius: '10px',
-                  padding: '8px 12px',
-                  cursor: 'pointer',
+                  background: '#182229',
+                  padding: '8px 14px',
+                  borderTop: '1px solid #2a3942',
                   display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: '8px',
+                  flexWrap: 'wrap',
+                  gap: '6px',
                 }}
               >
-                <div className="flex items-center gap-2 text-xs text-slate-300">
-                  <UploadCloud className="w-4 h-4 text-cyan-400 shrink-0" />
-                  <span>
-                    {replyAttachments.length > 0
-                      ? `${replyAttachments.length} attachment(s) ready to send`
-                      : 'Drag & drop or click to attach documents (sent as email attachments)'}
-                  </span>
-                </div>
-                <span className="text-[11px] font-semibold text-cyan-400 shrink-0">+ Add Files</span>
-              </div>
-
-              {replyAttachments.length > 0 && (
-                <div className="flex flex-wrap gap-1.5">
-                  {replyAttachments.map((att) => (
-                    <span
-                      key={att.id}
+                {replyAttachments.map((att) => (
+                  <span
+                    key={att.id}
+                    style={{
+                      fontSize: '11px',
+                      padding: '4px 9px',
+                      borderRadius: '999px',
+                      background: '#202c33',
+                      border: '1px solid #2a3942',
+                      color: '#e9edef',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                    }}
+                  >
+                    <FileText className="w-3 h-3 text-emerald-400" />
+                    <span>{att.fileName}</span>
+                    <span style={{ color: '#8696a0' }}>({(att.fileSizeBytes / 1024).toFixed(0)}KB)</span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setReplyAttachments((prev) => prev.filter((item) => item.id !== att.id))
+                      }
                       style={{
-                        fontSize: '11px',
-                        padding: '3px 8px',
-                        borderRadius: '999px',
-                        background: '#1e293b',
-                        border: '1px solid #475569',
-                        color: '#e2e8f0',
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: '6px',
+                        background: 'transparent',
+                        border: 'none',
+                        color: '#8696a0',
+                        cursor: 'pointer',
+                        padding: 0,
+                        display: 'flex',
                       }}
+                      title="Remove attachment"
                     >
-                      <FileText className="w-3 h-3 text-cyan-400" />
-                      <span>{att.fileName}</span>
-                      <span className="text-slate-400">({(att.fileSizeBytes / 1024).toFixed(0)}KB)</span>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setReplyAttachments((prev) => prev.filter((item) => item.id !== att.id));
-                        }}
-                        style={{
-                          background: 'transparent',
-                          border: 'none',
-                          color: '#94a3b8',
-                          cursor: 'pointer',
-                          padding: 0,
-                          display: 'flex',
-                        }}
-                        title="Remove attachment"
-                      >
-                        <X className="w-3 h-3" />
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              )}
+                      <X className="w-3 h-3" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
 
-              <input
-                type="text"
-                value={replyDraftSubject}
-                onChange={(e) => setReplyDraftSubject(e.target.value)}
-                placeholder="Email Subject"
-                className="auth-input"
-                style={{ fontSize: '12px', padding: '8px 10px' }}
-              />
+            {/* WhatsApp-style Bottom Composer Bar */}
+            <div
+              style={{
+                background: '#202c33',
+                padding: '10px 12px',
+                borderTop: '1px solid #2a3942',
+                display: 'flex',
+                alignItems: 'flex-end',
+                gap: '8px',
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => replyDocInputRef.current?.click()}
+                title="Attach documents (or drag & drop anywhere)"
+                style={{
+                  width: '40px',
+                  height: '40px',
+                  borderRadius: '50%',
+                  background: '#2a3942',
+                  border: 'none',
+                  color: '#aebac1',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  cursor: 'pointer',
+                  flexShrink: 0,
+                }}
+              >
+                <Plus className="w-5 h-5" />
+              </button>
+
               <textarea
-                rows={3}
+                rows={1}
                 value={replyDraftMessage}
                 onChange={(e) => setReplyDraftMessage(e.target.value)}
-                placeholder="Write a follow-up message or reply..."
-                className="auth-input"
-                style={{ fontSize: '12px', padding: '8px 10px', resize: 'vertical' }}
-              />
-              <div className="flex items-center justify-end gap-2">
-                <button
-                  onClick={() => {
-                    setReplyAttachments([]);
-                    setActiveThreadTask(null);
-                  }}
-                  className="chat-action-btn"
-                  style={{ padding: '7px 14px' }}
-                >
-                  Close
-                </button>
-                <button
-                  onClick={handleSendFollowUpReply}
-                  disabled={
-                    isSendingFollowUp || (!replyDraftMessage.trim() && replyAttachments.length === 0)
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    if (!isSendingFollowUp && (replyDraftMessage.trim() || replyAttachments.length > 0)) {
+                      void handleSendFollowUpReply();
+                    }
                   }
-                  className="chat-action-btn primary"
-                  style={{ padding: '7px 16px' }}
-                >
-                  {isSendingFollowUp ? 'Sending...' : 'Send Follow-Up Email'}
-                </button>
-              </div>
+                }}
+                placeholder="Type a message..."
+                style={{
+                  flex: 1,
+                  background: '#2a3942',
+                  border: 'none',
+                  outline: 'none',
+                  borderRadius: '20px',
+                  padding: '10px 16px',
+                  color: '#e9edef',
+                  fontSize: '13.5px',
+                  lineHeight: 1.4,
+                  resize: 'none',
+                  maxHeight: '110px',
+                }}
+              />
+
+              <button
+                type="button"
+                onClick={handleSendFollowUpReply}
+                disabled={
+                  isSendingFollowUp || (!replyDraftMessage.trim() && replyAttachments.length === 0)
+                }
+                title="Send message"
+                style={{
+                  width: '40px',
+                  height: '40px',
+                  borderRadius: '50%',
+                  background:
+                    isSendingFollowUp || (!replyDraftMessage.trim() && replyAttachments.length === 0)
+                      ? '#2a3942'
+                      : '#00a884',
+                  border: 'none',
+                  color:
+                    isSendingFollowUp || (!replyDraftMessage.trim() && replyAttachments.length === 0)
+                      ? '#667781'
+                      : '#ffffff',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  cursor:
+                    isSendingFollowUp || (!replyDraftMessage.trim() && replyAttachments.length === 0)
+                      ? 'not-allowed'
+                      : 'pointer',
+                  flexShrink: 0,
+                }}
+              >
+                <ArrowUp className="w-5 h-5" />
+              </button>
             </div>
           </div>
         </div>
