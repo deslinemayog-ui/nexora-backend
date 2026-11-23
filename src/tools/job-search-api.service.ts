@@ -65,6 +65,11 @@ const AGGREGATOR_AND_NOISE_DOMAINS = [
   'sentry.io',
   'wixpress.com',
   'example.com',
+  'domain.com',
+  'yourdomain.com',
+  'yourcompany.com',
+  'placeholder.com',
+  'acme.com',
   'schema.org',
   'w3.org',
   'googleapis.com',
@@ -87,7 +92,7 @@ function isValidCompanyEmail(email?: string): email is string {
   const clean = email.trim().toLowerCase();
   if (!/^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/.test(clean)) return false;
   if (/\.(png|jpg|jpeg|gif|svg|webp|css|js)$/i.test(clean)) return false;
-  if (/^(noreply|no-reply|donotreply|mailer-daemon|postmaster|support@|privacy@|legal@|dmca@)/i.test(clean)) {
+  if (/^(noreply|no-reply|donotreply|mailer-daemon|postmaster|support@|privacy@|legal@|dmca@|your\.email@|email@|user@|name@|test@)/i.test(clean)) {
     return false;
   }
   const domain = clean.split('@')[1] || '';

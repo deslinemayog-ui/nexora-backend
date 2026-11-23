@@ -1000,17 +1000,19 @@ export async function buildApiServer(deps: ApiServerDependencies): Promise<Fasti
   app.get('/api/v1/jobs/search', async (request) => {
     const q = z
       .object({
-        q: z.string().default('Software Developer'),
+        q: z.string().optional(),
+        role: z.string().optional(),
         skills: z.string().optional(),
         country: z.string().optional(),
+        targetCountry: z.string().optional(),
         limit: z.coerce.number().int().min(1).max(25).default(10),
       })
       .parse(request.query);
 
     const data = await jobSearchApiService.searchJobs({
-      role: q.q,
+      role: q.q || q.role || 'Software Developer',
       skills: q.skills ? q.skills.split(',').map((s) => s.trim()).filter(Boolean) : undefined,
-      targetCountry: q.country,
+      targetCountry: q.country || q.targetCountry,
       limit: q.limit,
     });
     return { ok: true, data };
