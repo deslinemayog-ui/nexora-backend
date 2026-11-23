@@ -1,13 +1,19 @@
 import React from 'react';
 import {
   ArrowRight,
+  Bot,
   Briefcase,
   CheckCircle2,
+  Cpu,
+  CreditCard,
+  Database,
   FileCheck,
   Globe2,
   GraduationCap,
+  Lock,
   Mail,
   Plane,
+  RefreshCw,
   ShieldCheck,
   Sparkles,
   TrendingUp,
@@ -427,9 +433,12 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
           <h2 style={{ fontSize: '28px', fontWeight: 800, color: '#ffffff', marginBottom: '10px' }}>
             How It Works
           </h2>
+          <p style={{ color: '#94a3b8', fontSize: '14.5px', maxWidth: '620px', margin: '0 auto' }}>
+            Every workflow follows a strict 6-stage autonomous pipeline with a mandatory human review gate.
+          </p>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '18px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '18px', marginBottom: '42px' }}>
           {[
             {
               step: '01',
@@ -463,6 +472,179 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
                 {s.title}
               </h3>
               <p style={{ fontSize: '13.5px', lineHeight: 1.6, color: '#94a3b8', margin: 0 }}>{s.desc}</p>
+            </div>
+          ))}
+        </div>
+
+        {/* Visual Execution Pipeline Diagram */}
+        <div
+          style={{
+            padding: '28px 22px',
+            borderRadius: '18px',
+            background: 'linear-gradient(135deg, rgba(15, 23, 42, 0.9) 0%, rgba(17, 24, 39, 0.95) 100%)',
+            border: '1px solid rgba(59, 130, 246, 0.25)',
+            boxShadow: '0 16px 40px rgba(0, 0, 0, 0.35)',
+          }}
+        >
+          <div style={{ textAlign: 'center', marginBottom: '24px' }}>
+            <span
+              style={{
+                fontSize: '11px',
+                fontWeight: 800,
+                letterSpacing: '1px',
+                textTransform: 'uppercase',
+                color: '#60a5fa',
+              }}
+            >
+              Autonomous Execution Flow
+            </span>
+            <h3 style={{ fontSize: '20px', fontWeight: 800, color: '#ffffff', margin: '6px 0 0 0' }}>
+              From Prompt to Real Interview Alerts
+            </h3>
+          </div>
+
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+              gap: '12px',
+              alignItems: 'stretch',
+            }}
+          >
+            {[
+              { icon: Bot, label: '1. Semantic Router', sub: 'Multi-language + Deep Think', color: '#38bdf8' },
+              { icon: Cpu, label: '2. PDF Synthesis', sub: 'Headless Chrome ATS PDF', color: '#818cf8' },
+              { icon: Lock, label: '3. Approval Gate', sub: 'Side-by-side Review & Edit', color: '#fbbf24' },
+              { icon: Globe2, label: '4. Live Discovery', sub: 'Adzuna, Remotive & Portals', color: '#c084fc' },
+              { icon: Mail, label: '5. Auto Dispatch', sub: 'SMTP Email + Form Filler', color: '#34d399' },
+              { icon: RefreshCw, label: '6. Reply Monitor', sub: 'IMAP Threads & Interviews', color: '#60a5fa' },
+            ].map((node, i) => {
+              const Icon = node.icon;
+              return (
+                <div
+                  key={i}
+                  style={{
+                    padding: '14px 12px',
+                    borderRadius: '12px',
+                    background: 'rgba(255, 255, 255, 0.03)',
+                    border: '1px solid rgba(148, 163, 184, 0.16)',
+                    textAlign: 'center',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    gap: '6px',
+                  }}
+                >
+                  <div
+                    style={{
+                      width: '36px',
+                      height: '36px',
+                      borderRadius: '10px',
+                      background: 'rgba(30, 41, 59, 0.9)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      border: `1px solid ${node.color}55`,
+                    }}
+                  >
+                    <Icon className="w-4 h-4" style={{ color: node.color }} />
+                  </div>
+                  <div style={{ fontSize: '12.5px', fontWeight: 700, color: '#ffffff' }}>{node.label}</div>
+                  <div style={{ fontSize: '11px', color: '#94a3b8', lineHeight: 1.4 }}>{node.sub}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </section>
+
+      {/* Architecture & Infrastructure Section */}
+      <section style={{ maxWidth: '1040px', margin: '0 auto', padding: '32px 20px 56px 20px' }}>
+        <div style={{ textAlign: 'center', marginBottom: '28px' }}>
+          <h2 style={{ fontSize: '26px', fontWeight: 800, color: '#ffffff', marginBottom: '8px' }}>
+            Production Architecture
+          </h2>
+          <p style={{ color: '#94a3b8', fontSize: '14px', maxWidth: '620px', margin: '0 auto' }}>
+            Engineered by Empire Labs with separated edge UI, encrypted APIs, and persistent multi-tenant storage.
+          </p>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
+          {[
+            {
+              icon: Globe2,
+              title: 'Edge Web App (Netlify)',
+              detail: 'Responsive React + Vite SPA at / and /app with Firebase Auth and live PDF preview.',
+            },
+            {
+              icon: Cpu,
+              title: 'AI Orchestrator (GCP + Caddy)',
+              detail: 'HTTPS Fastify API + OpenClaw + NVIDIA NIM reasoning & Playwright Chromium automation.',
+            },
+            {
+              icon: Database,
+              title: 'Persistent Data & Credits',
+              detail: 'Firestore user profiles & task history paired with server-side wallet & submission receipts.',
+            },
+            {
+              icon: CreditCard,
+              title: 'Paystack & Email Pipeline',
+              detail: 'Verified Paystack top-ups ($5 free starter credit) + Zoho SMTP & Gmail IMAP reply sync.',
+            },
+          ].map((box, idx) => {
+            const Icon = box.icon;
+            return (
+              <div
+                key={idx}
+                style={{
+                  padding: '20px',
+                  borderRadius: '14px',
+                  background: 'rgba(15, 23, 42, 0.55)',
+                  border: '1px solid rgba(255, 255, 255, 0.08)',
+                }}
+              >
+                <Icon className="w-5 h-5 text-cyan-400" style={{ marginBottom: '10px' }} />
+                <div style={{ fontSize: '14.5px', fontWeight: 700, color: '#ffffff', marginBottom: '6px' }}>
+                  {box.title}
+                </div>
+                <p style={{ fontSize: '12.5px', color: '#94a3b8', lineHeight: 1.55, margin: 0 }}>{box.detail}</p>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
+      {/* FAQ Section */}
+      <section style={{ maxWidth: '900px', margin: '0 auto', padding: '20px 20px 56px 20px' }}>
+        <h2 style={{ fontSize: '24px', fontWeight: 800, color: '#ffffff', textAlign: 'center', marginBottom: '24px' }}>
+          Frequently Asked Questions
+        </h2>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          {[
+            {
+              q: 'Will Nexora AI ever send applications without my permission?',
+              a: 'No. Every CV, visa dossier, investor memo, and scholarship letter is compiled into a PDF first for you to review and edit. Submissions only run after you click Approve & Submit.',
+            },
+            {
+              q: 'How does the $5.00 free starter credit work?',
+              a: 'Every new account starts with $5.00 in free submission credits. Employment, Investor, and Scholarship submissions cost $1.00 each, and Relocation & Visa submissions cost $2.00 each. You can top up anytime via Paystack.',
+            },
+            {
+              q: 'How do I see company replies and interview invitations?',
+              a: 'Open the Submissions drawer inside /app and click View Replies or Refresh Inbox. Nexora AI matches inbound email replies to your exact submission receipt and highlights interview invitations automatically.',
+            },
+          ].map((faq, idx) => (
+            <div
+              key={idx}
+              style={{
+                padding: '18px 20px',
+                borderRadius: '12px',
+                background: 'rgba(255, 255, 255, 0.03)',
+                border: '1px solid rgba(255, 255, 255, 0.08)',
+              }}
+            >
+              <div style={{ fontSize: '14.5px', fontWeight: 700, color: '#ffffff', marginBottom: '6px' }}>{faq.q}</div>
+              <div style={{ fontSize: '13px', color: '#94a3b8', lineHeight: 1.6 }}>{faq.a}</div>
             </div>
           ))}
         </div>
