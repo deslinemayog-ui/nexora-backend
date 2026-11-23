@@ -717,8 +717,19 @@ export async function buildApiServer(deps: ApiServerDependencies): Promise<Fasti
     useLocalCli: z.boolean().optional().default(true),
   });
 
-  app.post('/api/v1/openclaw/direct', async (request) => {
+  app.post('/api/v1/openclaw/direct', async (request, reply) => {
     const body = DirectOpenClawPromptSchema.parse(request.body);
+    const { evaluateRestrictedRequest } = await import('../core/permissions/security-guard');
+    const guard = evaluateRestrictedRequest(body.prompt);
+    if (guard.blocked) {
+      return reply.status(403).send({
+        ok: false,
+        error: {
+          code: guard.category || 'SECURITY_POLICY_BLOCKED',
+          message: guard.userMessage || guard.reason,
+        },
+      });
+    }
     const safeTenantId = body.customerId.replace(/[^a-zA-Z0-9_-]/g, '') || 'web_studio';
     const sessionKey = deps.openclawService.createConversationSessionKey(
       safeTenantId,

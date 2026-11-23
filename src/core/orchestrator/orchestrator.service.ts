@@ -23,6 +23,7 @@ import { logger } from '../../utils/logger';
 import { ConversationService } from '../conversation/conversation.service';
 import { CustomerService } from '../customer/customer.service';
 import { DetectedIntent, IntentDetector, intentDetector } from './intent.detector';
+import { evaluateRestrictedRequest } from '../permissions/security-guard';
 
 export interface OrchestrationResult {
   customerId: string;
@@ -260,6 +261,58 @@ export class OrchestratorService {
 
       if (!effectiveText || effectiveText.trim().length === 0) {
         effectiveText = `[Received ${incoming.messageType} message]`;
+      }
+
+      // Security & Compliance Guardrail: Reject OS manipulation, unrelated file access, and certificate/gov doc edits
+      const guard = evaluateRestrictedRequest(effectiveText);
+      if (guard.blocked && guard.userMessage) {
+        await this.repository.createAuditLog({
+          customerId: customer.id,
+          actorType: 'SYSTEM',
+          actorId: guard.category || 'POLICY_BLOCK',
+          action: 'RESTRICTED_REQUEST_REJECTED',
+          resourceType: 'CONVERSATION',
+          resourceId: conversation.id,
+          details: {
+            category: guard.category,
+            reason: guard.reason,
+          },
+        });
+
+        await this.conversationService.recordInboundMessage({
+          customerId: customer.id,
+          conversationId: conversation.id,
+          externalMessageId: incoming.externalMessageId,
+          messageType: incoming.messageType,
+          content: effectiveText,
+          mediaDocumentId,
+          detectedIntent: guard.category || 'SECURITY_BLOCK',
+          routedAgentType: AgentType.RESEARCH_AGENT,
+        });
+
+        await this.conversationService.recordOutboundMessage({
+          customerId: customer.id,
+          conversationId: conversation.id,
+          content: guard.userMessage,
+          routedAgentType: AgentType.RESEARCH_AGENT,
+        });
+
+        if (!options?.skipWhatsAppSend) {
+          await this.whatsappService.sendText(incoming.senderJid, guard.userMessage);
+        }
+
+        return {
+          customerId: customer.id,
+          conversationId: conversation.id,
+          detectedIntent: {
+            category: 'SECURITY_BLOCK' as any,
+            specialistAgent: AgentType.RESEARCH_AGENT,
+            isMultiStepProject: false,
+            confidence: 1,
+          },
+          routedAgent: AgentType.RESEARCH_AGENT,
+          responseText: guard.userMessage,
+        };
       }
 
       // Extract candidate full name if provided in third-person prompt e.g. "James Phiri wants you to help..."
