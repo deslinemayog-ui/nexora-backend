@@ -2273,22 +2273,12 @@ export const App: React.FC = () => {
                 setShowTopUpModal(true);
               }}
               title="Click to top up submission credits via Paystack"
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '6px',
-                padding: '8px 12px',
-                borderRadius: '8px',
-                background: 'rgba(16, 185, 129, 0.12)',
-                border: '1px solid rgba(16, 185, 129, 0.35)',
-                color: '#6ee7b7',
-                fontSize: '12px',
-                fontWeight: 700,
-                cursor: 'pointer',
-              }}
+              className="header-credit-btn"
             >
-              <span>Credit: ${walletBalanceDollars}</span>
-              <span style={{ color: '#34d399', fontWeight: 800 }}>+ Top Up</span>
+              <span>
+                <span className="header-credit-prefix">Credit: </span>${walletBalanceDollars}
+              </span>
+              <span className="header-credit-topup">+ Top Up</span>
             </button>
             <button
               onClick={() => setShowTasksDrawer(!showTasksDrawer)}
@@ -2297,7 +2287,7 @@ export const App: React.FC = () => {
             >
               <Layers className="w-3.5 h-3.5" />
               <span>
-                Submissions ({activeConversation?.tasks.length || 0})
+                <span className="header-submissions-label">Submissions </span>({activeConversation?.tasks.length || 0})
               </span>
             </button>
 
@@ -3415,22 +3405,10 @@ export const App: React.FC = () => {
                     {metaMap.docs.map((docItem) => {
                       const docState = prereqDocs[docItem.key] || { draftRequested: false };
                       return (
-                        <div
-                          key={docItem.key}
-                          style={{
-                            padding: '10px 12px',
-                            borderRadius: '12px',
-                            background: '#161616',
-                            border: '1px solid #2e2e2e',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            gap: '10px',
-                          }}
-                        >
+                        <div key={docItem.key} className="prereq-doc-row">
                           <div style={{ minWidth: 0 }}>
                             <div className="text-xs font-semibold text-slate-200">{docItem.label}</div>
-                            <div className="text-[11px] text-slate-400">
+                            <div className="text-[11px] text-slate-400 truncate">
                               {docState.fileName
                                 ? `📎 ${docState.fileName}`
                                 : docState.draftRequested
@@ -3438,13 +3416,10 @@ export const App: React.FC = () => {
                                   : 'Not uploaded yet'}
                             </div>
                           </div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
-                            <label
-                              className="chat-action-btn"
-                              style={{ padding: '5px 10px', fontSize: '11px', cursor: 'pointer' }}
-                            >
-                              <UploadCloud className="w-3.5 h-3.5" />
-                              <span>{docState.fileName ? 'Replace' : 'Upload'}</span>
+                          <div className="prereq-doc-actions">
+                            <label className="prereq-doc-btn">
+                              <UploadCloud className="w-3.5 h-3.5 text-cyan-400" />
+                              <span>{docState.fileName ? 'Replace File' : 'Upload File'}</span>
                               <input
                                 type="file"
                                 accept=".pdf,.doc,.docx,.txt,.png,.jpg,.jpeg"
@@ -3460,11 +3435,10 @@ export const App: React.FC = () => {
                               <button
                                 type="button"
                                 onClick={() => togglePrereqDocDraft(docItem.key)}
-                                className={`chat-action-btn ${docState.draftRequested ? 'primary' : ''}`}
-                                style={{ padding: '5px 10px', fontSize: '11px' }}
+                                className={`prereq-doc-btn ${docState.draftRequested ? 'active' : ''}`}
                               >
-                                <Sparkles className="w-3 h-3" />
-                                <span>{docState.draftRequested ? 'Drafting Selected' : "Don't have? Draft it"}</span>
+                                <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+                                <span>{docState.draftRequested ? 'AI Drafting ✓' : 'Draft with AI'}</span>
                               </button>
                             )}
                           </div>
@@ -3505,7 +3479,16 @@ export const App: React.FC = () => {
                       Number of Submissions for this Task
                     </span>
                     <span className="text-xs font-bold text-emerald-400">
-                      Est. Cost: ${(submissionLimit * (activePrereqTask === 'relocate' ? 2 : 1)).toFixed(2)}
+                      Est. Cost: ${(
+                        submissionLimit *
+                        (() => {
+                          const match = agentCatalog.find((a) => a.taskKey === activePrereqTask);
+                          if (match) return match.costPerSubmissionCents / 100;
+                          if (activePrereqTask === 'relocate') return 2;
+                          if (activePrereqTask === 'employment') return 0.25;
+                          return 1;
+                        })()
+                      ).toFixed(2)}
                     </span>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
