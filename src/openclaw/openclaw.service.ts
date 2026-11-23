@@ -209,8 +209,10 @@ export class OpenClawService {
         if (nvidiaApiKey) {
           const candidateModels = [
             process.env.NVIDIA_MODEL?.trim(),
-            'google/gemma-4-31b-it',
             'mistralai/mistral-large-4-1t-a52b',
+            'nvidia/nemotron-3.5-lightning-30b-a3b',
+            'nvidia/nemotron-3.5-bolt-e4b',
+            'google/gemma-4-31b-it',
           ].filter((m): m is string => Boolean(m));
 
           for (const nvidiaModel of candidateModels) {
@@ -227,7 +229,7 @@ export class OpenClawService {
                   temperature: 0.4,
                   max_tokens: 2500,
                 }),
-                signal: AbortSignal.timeout(160000),
+                signal: AbortSignal.timeout(45000),
               });
 
               if (nimRes.ok) {

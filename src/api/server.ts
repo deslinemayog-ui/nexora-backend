@@ -91,14 +91,18 @@ const UploadDocumentJsonSchema = z.object({
 export async function buildApiServer(deps: ApiServerDependencies): Promise<FastifyInstance> {
   const app = Fastify({
     logger: false,
-    connectionTimeout: 180_000,
-    keepAliveTimeout: 180_000,
+    connectionTimeout: 240_000,
+    keepAliveTimeout: 240_000,
+    requestTimeout: 240_000,
     bodyLimit: 25 * 1024 * 1024,
   });
 
   app.setErrorHandler(globalErrorHandler);
 
-  await app.register(helmet, { contentSecurityPolicy: false });
+  await app.register(helmet, {
+    contentSecurityPolicy: false,
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+  });
   await app.register(cors, { origin: true });
   await app.register(rateLimit, {
     max: env.API_RATE_LIMIT_MAX,
