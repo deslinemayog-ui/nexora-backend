@@ -227,7 +227,7 @@ export class OpenClawService {
                   temperature: 0.4,
                   max_tokens: 2500,
                 }),
-                signal: AbortSignal.timeout(25000),
+                signal: AbortSignal.timeout(75000),
               });
 
               if (nimRes.ok) {
@@ -350,7 +350,12 @@ export class OpenClawService {
           input.systemInstructions.match(/Customer Profile Summary:\s*Name:\s*([^|\n]+)/i);
         const candidateName = nameMatch?.[1]?.trim() || 'Candidate';
 
+        const hasDetailedCvInput =
+          /\b(?:experience|worked\s+at|skills|education|diploma|degree|@)\b/i.test(lower) &&
+          rawMsg.length > 100;
+
         const isInitialIntake =
+          !hasDetailedCvInput &&
           /\b(?:wants you to help .* apply for a job|doesn't have a cv|does not have a cv|don't have a cv|no cv|without a cv|interview me|help me draft|draft.*(?:cv|resume)|compile.*(?:cv|resume)|build.*(?:cv|resume)|make.*(?:cv|resume))\b/i.test(
             lower,
           );
