@@ -291,6 +291,15 @@ export class DocumentService {
     return DocumentType.OTHER;
   }
 
+  public async extractTextOnly(
+    buffer: Buffer,
+    mimeType: string,
+    fileName: string,
+  ): Promise<string> {
+    const docType = this.classifyDocumentType(fileName, mimeType);
+    return this.extractContentText(buffer, mimeType, docType);
+  }
+
   private async extractContentText(
     buffer: Buffer,
     mimeType: string,

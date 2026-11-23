@@ -84,11 +84,27 @@ export interface AutonomousWorkExecutionReport {
  */
 export class AutonomousWorkerService {
   private readonly submissionsDir: string;
+  private readonly sessionAttachments = new Map<string, Array<{ filename: string; path: string }>>();
 
   constructor(submissionsDir?: string) {
     this.submissionsDir =
       submissionsDir ??
       path.resolve(process.cwd(), 'node_modules', '.cache', 'nexora-submissions');
+  }
+
+  /**
+   * Registers user-uploaded documents for a customer/session so they are attached to outgoing emails.
+   */
+  public registerSessionAttachments(
+    customerId: string,
+    files: Array<{ filename: string; path: string }>,
+  ): void {
+    if (!customerId || files.length === 0) return;
+    const existing = this.sessionAttachments.get(customerId) ?? [];
+    const byName = new Map<string, { filename: string; path: string }>();
+    for (const item of existing) byName.set(item.filename, item);
+    for (const item of files) byName.set(item.filename, item);
+    this.sessionAttachments.set(customerId, Array.from(byName.values()));
   }
 
   /**
@@ -946,6 +962,7 @@ export class AutonomousWorkerService {
 
       // Attempt live dispatch via Zoho SMTP (with CV PDF attached for JOB_AGENT, or screenshot + PDF for other agents)
       const smtpDispatch = await this.dispatchEmailAndWebhook({
+        customerId: params.customerId,
         agentType: params.agentType,
         applicantName: applicantUserLabel,
         target,
@@ -1006,6 +1023,7 @@ export class AutonomousWorkerService {
   }
 
   private async dispatchEmailAndWebhook(params: {
+    customerId?: string;
     agentType?: AgentType;
     applicantName: string;
     target: DiscoveredPlatformTarget;
@@ -1022,7 +1040,7 @@ export class AutonomousWorkerService {
     messageId?: string;
     smtpResponse?: string;
   } | null> {
-    const { agentType, applicantName, target, receiptId, subject, body, fields, browserProof, generatedDocument, shouldSendSmtp } =
+    const { customerId, agentType, applicantName, target, receiptId, subject, body, fields, browserProof, generatedDocument, shouldSendSmtp } =
       params;
 
     // 1. If an external webhook or portal intake URL is configured in env, POST the payload
@@ -1061,6 +1079,16 @@ export class AutonomousWorkerService {
             filename: browserProof.screenshotFileName,
             path: browserProof.screenshotPath,
           });
+        }
+
+        // Attach any user-uploaded reference documents registered in this conversation/session
+        if (customerId) {
+          const userDocs = this.sessionAttachments.get(customerId) ?? [];
+          for (const doc of userDocs) {
+            if (!attachments.some((a) => a.filename === doc.filename)) {
+              attachments.push({ filename: doc.filename, path: doc.path });
+            }
+          }
         }
 
         const emailResult = await sendApplicationEmailOnBehalfOfUser({

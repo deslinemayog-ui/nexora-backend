@@ -52,6 +52,17 @@ import {
   Trash2,
 } from 'lucide-react';
 
+interface AttachedDocItem {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  fileSizeBytes: number;
+  contentBase64: string;
+  extractedText?: string;
+  extracting?: boolean;
+  error?: string;
+}
+
 interface MessageRecord {
   id: string;
   direction: 'INBOUND' | 'OUTBOUND';
@@ -62,6 +73,7 @@ interface MessageRecord {
   createdAt: string;
   thinkingSummary?: string;
   thinkingDurationSec?: number;
+  attachedDocs?: Array<{ fileName: string; mimeType: string; fileSizeBytes: number }>;
   actions?: Array<{ label: string; action: string; primary?: boolean }>;
   generatedPdf?: {
     fileName: string;
@@ -267,6 +279,7 @@ export const App: React.FC = () => {
     interviewSummary?: string;
     companyName?: string;
     messageId?: string;
+    attachments?: Array<{ fileName: string; mimeType: string; sizeBytes?: number }>;
   }>>([]);
   const [outboundThreadMsgs, setOutboundThreadMsgs] = useState<Array<{
     id: string;
@@ -280,6 +293,7 @@ export const App: React.FC = () => {
     isInterview: boolean;
     companyName?: string;
     messageId?: string;
+    attachments?: Array<{ fileName: string; mimeType: string; sizeBytes?: number }>;
   }>>([]);
   const [interviewAlerts, setInterviewAlerts] = useState<Array<{
     id: string;
@@ -296,6 +310,11 @@ export const App: React.FC = () => {
   const [replyDraftSubject, setReplyDraftSubject] = useState('');
   const [replyDraftMessage, setReplyDraftMessage] = useState('');
   const [isSendingFollowUp, setIsSendingFollowUp] = useState(false);
+  const [replyAttachments, setReplyAttachments] = useState<AttachedDocItem[]>([]);
+  const [isDraggingReplyFiles, setIsDraggingReplyFiles] = useState(false);
+  const [chatAttachments, setChatAttachments] = useState<AttachedDocItem[]>([]);
+  const [isDraggingChatFiles, setIsDraggingChatFiles] = useState(false);
+  const [expandedDocId, setExpandedDocId] = useState<string | null>(null);
 
   // DB-Backed Agent Catalog & Account Wallet ($5.00 Free Credit)
   const [agentCatalog, setAgentCatalog] = useState<Array<{
@@ -363,6 +382,8 @@ export const App: React.FC = () => {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const cvFileInputRef = useRef<HTMLInputElement>(null);
+  const chatDocInputRef = useRef<HTMLInputElement>(null);
+  const replyDocInputRef = useRef<HTMLInputElement>(null);
 
   // Fetch & render Review/Edit PDF via Blob URL so cross-origin iframe restrictions never block it
   useEffect(() => {
@@ -788,8 +809,91 @@ export const App: React.FC = () => {
     }
   };
 
+  const readFilesAsBase64 = async (fileList: FileList | File[]): Promise<AttachedDocItem[]> => {
+    const files = Array.from(fileList).slice(0, 10);
+    return Promise.all(
+      files.map(
+        (file) =>
+          new Promise<AttachedDocItem>((resolve) => {
+            const reader = new FileReader();
+            reader.onload = () => {
+              const raw = typeof reader.result === 'string' ? reader.result : '';
+              const base64 = raw.includes(',') ? raw.split(',')[1] : raw;
+              resolve({
+                id: `doc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                fileName: file.name,
+                mimeType: file.type || 'application/octet-stream',
+                fileSizeBytes: file.size,
+                contentBase64: base64,
+              });
+            };
+            reader.readAsDataURL(file);
+          }),
+      ),
+    );
+  };
+
+  const handleChatFilesSelected = async (fileList: FileList | File[]) => {
+    const items = await readFilesAsBase64(fileList);
+    if (items.length === 0) return;
+
+    const pending = items.map((item) => ({ ...item, extracting: true }));
+    setChatAttachments((prev) => [...prev, ...pending]);
+
+    try {
+      const res = await apiFetch('/api/v1/documents/extract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          files: items.map((i) => ({
+            fileName: i.fileName,
+            mimeType: i.mimeType,
+            contentBase64: i.contentBase64,
+          })),
+        }),
+      });
+      const json = await res.json().catch(() => null);
+      if (res.ok && json?.ok && Array.isArray(json.data)) {
+        setChatAttachments((prev) =>
+          prev.map((att) => {
+            const idx = pending.findIndex((p) => p.id === att.id);
+            if (idx === -1) return att;
+            const extracted = json.data[idx];
+            return {
+              ...att,
+              extracting: false,
+              extractedText: extracted?.extractedText || '',
+            };
+          }),
+        );
+      } else {
+        setChatAttachments((prev) =>
+          prev.map((att) =>
+            pending.some((p) => p.id === att.id)
+              ? { ...att, extracting: false, error: 'Attached (extraction unavailable)' }
+              : att,
+          ),
+        );
+      }
+    } catch {
+      setChatAttachments((prev) =>
+        prev.map((att) =>
+          pending.some((p) => p.id === att.id)
+            ? { ...att, extracting: false, error: 'Attached (offline extraction skipped)' }
+            : att,
+        ),
+      );
+    }
+  };
+
+  const handleReplyFilesSelected = async (fileList: FileList | File[]) => {
+    const items = await readFilesAsBase64(fileList);
+    if (items.length === 0) return;
+    setReplyAttachments((prev) => [...prev, ...items]);
+  };
+
   const handleSendFollowUpReply = async () => {
-    if (!activeThreadTask || !replyDraftMessage.trim()) return;
+    if (!activeThreadTask || (!replyDraftMessage.trim() && replyAttachments.length === 0)) return;
     const recipient = activeThreadTask.contactEmail || 'info@empiredigitals.org';
     const threadMsgIds = [
       ...outboundThreadMsgs.filter((m) => m.receiptId === activeThreadTask.receiptId),
@@ -809,11 +913,19 @@ export const App: React.FC = () => {
           receiptId: activeThreadTask.receiptId,
           to: recipient,
           subject: replyDraftSubject.trim() || `Follow-Up (${activeThreadTask.receiptId})`,
-          message: replyDraftMessage.trim(),
+          message: replyDraftMessage.trim() || 'Please find attached the requested documents.',
           companyName: activeThreadTask.targetName,
           senderName: candidateName || currentUser?.displayName || undefined,
           inReplyTo: latestMessageId,
           references: threadMsgIds.length > 0 ? threadMsgIds : undefined,
+          attachments:
+            replyAttachments.length > 0
+              ? replyAttachments.map((a) => ({
+                  fileName: a.fileName,
+                  mimeType: a.mimeType,
+                  contentBase64: a.contentBase64,
+                }))
+              : undefined,
         }),
       });
       if (res.ok) {
@@ -821,6 +933,7 @@ export const App: React.FC = () => {
         if (json.ok && json.data) {
           setOutboundThreadMsgs((prev) => [...prev, json.data]);
           setReplyDraftMessage('');
+          setReplyAttachments([]);
         }
       }
     } finally {
@@ -1341,10 +1454,19 @@ export const App: React.FC = () => {
 
   // Send message to backend agent
   const handleSendMessage = async (textToSend?: string, convIdOverride?: string, agentOverride?: string) => {
-    const content = textToSend || inputText;
+    const activeAttachments = textToSend ? [] : chatAttachments;
+    const rawContent = textToSend || inputText;
+    const content =
+      rawContent.trim() ||
+      (activeAttachments.length > 0
+        ? `Please analyze and reference the ${activeAttachments.length} attached document(s): ${activeAttachments.map((a) => a.fileName).join(', ')}`
+        : '');
     if (!content.trim() || isSending) return;
 
-    setInputText('');
+    if (!textToSend) {
+      setInputText('');
+      setChatAttachments([]);
+    }
     setIsSending(true);
 
     let currentConvId = convIdOverride || activeConvId;
@@ -1384,12 +1506,26 @@ export const App: React.FC = () => {
     const userMessage: MessageRecord = {
       id: `msg-${Date.now()}`,
       direction: 'INBOUND',
-      messageType: 'TEXT',
+      messageType: activeAttachments.length > 0 ? 'DOCUMENT' : 'TEXT',
       content,
+      attachedDocs:
+        activeAttachments.length > 0
+          ? activeAttachments.map((a) => ({
+              fileName: a.fileName,
+              mimeType: a.mimeType,
+              fileSizeBytes: a.fileSizeBytes,
+            }))
+          : undefined,
       createdAt: new Date().toISOString(),
     };
 
     setMessages((prev) => [...prev, userMessage]);
+
+    const extractedRefNotes = activeAttachments
+      .filter((a) => a.extractedText && a.extractedText.trim().length > 0)
+      .map((a) => `[Extracted Reference Document (${a.fileName})]:\n${a.extractedText!.slice(0, 8000)}`)
+      .join('\n\n');
+    const promptWithRefs = extractedRefNotes ? `${content}\n\n${extractedRefNotes}` : content;
 
     try {
       const userPhone = getSessionPhoneNumber(currentUser);
@@ -1412,8 +1548,16 @@ export const App: React.FC = () => {
           displayName,
           customerName: candidateName.trim() || undefined,
           userEmail,
-          message: content,
-          text: content,
+          message: promptWithRefs,
+          text: promptWithRefs,
+          attachments:
+            activeAttachments.length > 0
+              ? activeAttachments.map((a) => ({
+                  fileName: a.fileName,
+                  mimeType: a.mimeType,
+                  contentBase64: a.contentBase64,
+                }))
+              : undefined,
         }),
       });
 
@@ -2309,6 +2453,30 @@ export const App: React.FC = () => {
                       )}
                     </div>
                   )}
+                  {Array.isArray(msg.attachedDocs) && msg.attachedDocs.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 mb-2">
+                      {msg.attachedDocs.map((doc, dIdx) => (
+                        <span
+                          key={`${doc.fileName}-${dIdx}`}
+                          style={{
+                            fontSize: '11px',
+                            padding: '3px 9px',
+                            borderRadius: '999px',
+                            background: 'rgba(34, 211, 238, 0.1)',
+                            border: '1px solid rgba(34, 211, 238, 0.35)',
+                            color: '#a5f3fc',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '5px',
+                          }}
+                        >
+                          <FileText className="w-3 h-3" />
+                          <span>{doc.fileName}</span>
+                          <span style={{ opacity: 0.7 }}>({(doc.fileSizeBytes / 1024).toFixed(0)}KB)</span>
+                        </span>
+                      ))}
+                    </div>
+                  )}
                   <div
                     dangerouslySetInnerHTML={{
                       __html: formatMessageMarkdown(msg.content),
@@ -2440,9 +2608,155 @@ export const App: React.FC = () => {
           </div>
         )}
 
-        {/* Floating Input Pill Bar */}
-        <div className="gpt-input-container">
-          <div className="floating-input-pill">
+        {/* Floating Input Pill Bar (supports multi-document drag & drop) */}
+        <div
+          className="gpt-input-container"
+          onDragOver={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (!isDraggingChatFiles) setIsDraggingChatFiles(true);
+          }}
+          onDragLeave={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+              setIsDraggingChatFiles(false);
+            }
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setIsDraggingChatFiles(false);
+            if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+              void handleChatFilesSelected(e.dataTransfer.files);
+            }
+          }}
+        >
+          <input
+            ref={chatDocInputRef}
+            type="file"
+            multiple
+            accept=".pdf,.txt,.md,.csv,.json,.doc,.docx,image/*"
+            style={{ display: 'none' }}
+            onChange={(e) => {
+              if (e.target.files && e.target.files.length > 0) {
+                void handleChatFilesSelected(e.target.files);
+                e.target.value = '';
+              }
+            }}
+          />
+
+          {chatAttachments.length > 0 && (
+            <div
+              style={{
+                width: '100%',
+                maxWidth: '780px',
+                margin: '0 auto 8px auto',
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: '8px',
+                padding: '8px 12px',
+                borderRadius: '14px',
+                background: 'rgba(24, 24, 27, 0.92)',
+                border: '1px solid #334155',
+              }}
+            >
+              {chatAttachments.map((att) => (
+                <div
+                  key={att.id}
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '4px',
+                    padding: '6px 10px',
+                    borderRadius: '10px',
+                    background: '#1e293b',
+                    border: '1px solid #475569',
+                    maxWidth: '280px',
+                  }}
+                >
+                  <div className="flex items-center gap-2">
+                    <FileText className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                    <span
+                      className="text-xs font-semibold text-white truncate"
+                      title={att.fileName}
+                      style={{ maxWidth: '150px' }}
+                    >
+                      {att.fileName}
+                    </span>
+                    <span className="text-[10px] text-slate-400 shrink-0">
+                      {(att.fileSizeBytes / 1024).toFixed(0)}KB
+                    </span>
+                    {att.extracting ? (
+                      <span className="text-[10px] text-cyan-300">Extracting...</span>
+                    ) : att.extractedText ? (
+                      <button
+                        type="button"
+                        onClick={() => setExpandedDocId(expandedDocId === att.id ? null : att.id)}
+                        style={{
+                          fontSize: '10px',
+                          color: '#34d399',
+                          background: 'transparent',
+                          border: 'none',
+                          cursor: 'pointer',
+                          padding: 0,
+                        }}
+                        title="Preview extracted text"
+                      >
+                        ✓ {att.extractedText.length} chars
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setChatAttachments((prev) => prev.filter((item) => item.id !== att.id))
+                      }
+                      style={{
+                        background: 'transparent',
+                        border: 'none',
+                        color: '#94a3b8',
+                        cursor: 'pointer',
+                        padding: 0,
+                        display: 'flex',
+                      }}
+                      title="Remove document"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  {expandedDocId === att.id && att.extractedText && (
+                    <div
+                      style={{
+                        fontSize: '11px',
+                        color: '#cbd5e1',
+                        background: '#0f172a',
+                        padding: '6px 8px',
+                        borderRadius: '6px',
+                        maxHeight: '90px',
+                        overflowY: 'auto',
+                        whiteSpace: 'pre-wrap',
+                      }}
+                    >
+                      {att.extractedText.slice(0, 600)}
+                      {att.extractedText.length > 600 ? '...' : ''}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div
+            className="floating-input-pill"
+            style={
+              isDraggingChatFiles
+                ? {
+                    borderColor: '#22d3ee',
+                    boxShadow: '0 0 0 2px rgba(34, 211, 238, 0.3)',
+                  }
+                : undefined
+            }
+          >
             <div className="plus-menu-container">
               <button
                 onClick={() => setShowPlusMenu(!showPlusMenu)}
@@ -2454,6 +2768,16 @@ export const App: React.FC = () => {
 
               {showPlusMenu && (
                 <div className="plus-menu-popover">
+                  <button
+                    onClick={() => {
+                      setShowPlusMenu(false);
+                      chatDocInputRef.current?.click();
+                    }}
+                    className="plus-menu-item"
+                  >
+                    <UploadCloud className="w-4 h-4 text-emerald-400" />
+                    <span>Attach Documents (Extract & Email)</span>
+                  </button>
                   <button
                     onClick={() => {
                       setShowPlusMenu(false);
@@ -2585,7 +2909,7 @@ export const App: React.FC = () => {
 
               <button
                 onClick={() => handleSendMessage()}
-                disabled={!inputText.trim() || isSending}
+                disabled={(!inputText.trim() && chatAttachments.length === 0) || isSending}
                 className="pill-send-btn"
                 title="Send"
               >
@@ -4034,13 +4358,146 @@ export const App: React.FC = () => {
                       <div style={{ fontSize: '13px', whiteSpace: 'pre-wrap', lineHeight: 1.55, color: '#f1f5f9' }}>
                         {msg.body}
                       </div>
+                      {Array.isArray(msg.attachments) && msg.attachments.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5 mt-2">
+                          {msg.attachments.map((att, attIdx) => (
+                            <span
+                              key={`${att.fileName}-${attIdx}`}
+                              style={{
+                                fontSize: '11px',
+                                padding: '2px 8px',
+                                borderRadius: '999px',
+                                background: 'rgba(15, 23, 42, 0.55)',
+                                border: '1px solid rgba(255,255,255,0.2)',
+                                color: '#e2e8f0',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                              }}
+                            >
+                              <FileText className="w-3 h-3" />
+                              {att.fileName}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   );
                 });
               })()}
             </div>
 
-            <div style={{ borderTop: '1px solid #2e2e2e', paddingTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <div
+              style={{
+                borderTop: '1px solid #2e2e2e',
+                paddingTop: '12px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '8px',
+              }}
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (!isDraggingReplyFiles) setIsDraggingReplyFiles(true);
+              }}
+              onDragLeave={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                  setIsDraggingReplyFiles(false);
+                }
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsDraggingReplyFiles(false);
+                if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                  void handleReplyFilesSelected(e.dataTransfer.files);
+                }
+              }}
+            >
+              <input
+                ref={replyDocInputRef}
+                type="file"
+                multiple
+                accept=".pdf,.txt,.md,.csv,.json,.doc,.docx,image/*"
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  if (e.target.files && e.target.files.length > 0) {
+                    void handleReplyFilesSelected(e.target.files);
+                    e.target.value = '';
+                  }
+                }}
+              />
+
+              <div
+                onClick={() => replyDocInputRef.current?.click()}
+                style={{
+                  border: isDraggingReplyFiles ? '1px dashed #22d3ee' : '1px dashed #475569',
+                  background: isDraggingReplyFiles ? 'rgba(34, 211, 238, 0.08)' : '#1e1e22',
+                  borderRadius: '10px',
+                  padding: '8px 12px',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '8px',
+                }}
+              >
+                <div className="flex items-center gap-2 text-xs text-slate-300">
+                  <UploadCloud className="w-4 h-4 text-cyan-400 shrink-0" />
+                  <span>
+                    {replyAttachments.length > 0
+                      ? `${replyAttachments.length} attachment(s) ready to send`
+                      : 'Drag & drop or click to attach documents (sent as email attachments)'}
+                  </span>
+                </div>
+                <span className="text-[11px] font-semibold text-cyan-400 shrink-0">+ Add Files</span>
+              </div>
+
+              {replyAttachments.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {replyAttachments.map((att) => (
+                    <span
+                      key={att.id}
+                      style={{
+                        fontSize: '11px',
+                        padding: '3px 8px',
+                        borderRadius: '999px',
+                        background: '#1e293b',
+                        border: '1px solid #475569',
+                        color: '#e2e8f0',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                      }}
+                    >
+                      <FileText className="w-3 h-3 text-cyan-400" />
+                      <span>{att.fileName}</span>
+                      <span className="text-slate-400">({(att.fileSizeBytes / 1024).toFixed(0)}KB)</span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setReplyAttachments((prev) => prev.filter((item) => item.id !== att.id));
+                        }}
+                        style={{
+                          background: 'transparent',
+                          border: 'none',
+                          color: '#94a3b8',
+                          cursor: 'pointer',
+                          padding: 0,
+                          display: 'flex',
+                        }}
+                        title="Remove attachment"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+
               <input
                 type="text"
                 value={replyDraftSubject}
@@ -4059,7 +4516,10 @@ export const App: React.FC = () => {
               />
               <div className="flex items-center justify-end gap-2">
                 <button
-                  onClick={() => setActiveThreadTask(null)}
+                  onClick={() => {
+                    setReplyAttachments([]);
+                    setActiveThreadTask(null);
+                  }}
                   className="chat-action-btn"
                   style={{ padding: '7px 14px' }}
                 >
@@ -4067,7 +4527,9 @@ export const App: React.FC = () => {
                 </button>
                 <button
                   onClick={handleSendFollowUpReply}
-                  disabled={isSendingFollowUp || !replyDraftMessage.trim()}
+                  disabled={
+                    isSendingFollowUp || (!replyDraftMessage.trim() && replyAttachments.length === 0)
+                  }
                   className="chat-action-btn primary"
                   style={{ padding: '7px 16px' }}
                 >

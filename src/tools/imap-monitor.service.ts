@@ -2,6 +2,12 @@ import { ImapFlow } from 'imapflow';
 import { logger } from '../utils/logger';
 import { sendMail } from './email.service';
 
+export interface SubmissionAttachmentSummary {
+  fileName: string;
+  mimeType: string;
+  sizeBytes?: number;
+}
+
 export interface SubmissionThreadMessage {
   id: string;
   receiptId?: string;
@@ -15,6 +21,7 @@ export interface SubmissionThreadMessage {
   interviewSummary?: string;
   companyName?: string;
   messageId?: string;
+  attachments?: SubmissionAttachmentSummary[];
 }
 
 export interface InterviewAlert {
@@ -476,6 +483,11 @@ export class ImapMonitorService {
     senderName?: string;
     inReplyTo?: string;
     references?: string[];
+    attachments?: Array<{
+      fileName: string;
+      mimeType: string;
+      contentBase64: string;
+    }>;
   }): Promise<SubmissionThreadMessage> {
     const html = `
       <div style="font-family: Montserrat, Arial, sans-serif; color: #1e293b; line-height: 1.65;">
@@ -497,12 +509,19 @@ export class ImapMonitorService {
     const mergedRefs = Array.from(new Set([...(params.references ?? []), ...priorOutboundIds]));
     const inReplyTo = params.inReplyTo || mergedRefs[mergedRefs.length - 1];
 
+    const nodemailerAttachments = (params.attachments ?? []).map((att) => ({
+      filename: att.fileName,
+      content: Buffer.from(att.contentBase64, 'base64'),
+      contentType: att.mimeType,
+    }));
+
     const mailRes = await sendMail({
       to: actualRecipient,
       subject: params.subject,
       html,
       inReplyTo,
       references: mergedRefs.length > 0 ? mergedRefs : undefined,
+      attachments: nodemailerAttachments.length > 0 ? nodemailerAttachments : undefined,
     });
 
     return this.recordOutboundMessage({
@@ -514,6 +533,11 @@ export class ImapMonitorService {
       receivedAt: new Date().toISOString(),
       companyName: params.companyName,
       messageId: mailRes.messageId,
+      attachments: (params.attachments ?? []).map((att) => ({
+        fileName: att.fileName,
+        mimeType: att.mimeType,
+        sizeBytes: Buffer.from(att.contentBase64, 'base64').byteLength,
+      })),
     });
   }
 }

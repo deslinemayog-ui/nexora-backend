@@ -469,6 +469,15 @@ export async function buildApiServer(deps: ApiServerDependencies): Promise<Fasti
         contentBase64: z.string().min(1),
       })
       .optional(),
+    attachments: z
+      .array(
+        z.object({
+          fileName: z.string().min(1),
+          mimeType: z.string().min(3),
+          contentBase64: z.string().min(1),
+        }),
+      )
+      .optional(),
   });
 
     const handleWebChatMessage = async (request: any) => {
@@ -481,24 +490,92 @@ export async function buildApiServer(deps: ApiServerDependencies): Promise<Fasti
       const digits = convDigits ? `${baseDigits.slice(0, 7)}${convDigits}` : baseDigits;
       const senderJid = `${digits}@s.whatsapp.net`;
       const resolvedDisplayName = body.displayName || body.customerName || 'Web Console User';
-      const resolvedText = body.text || body.message || '';
+      let resolvedText = body.text || body.message || '';
+
+      const allUploads = [
+        ...(body.attachments ?? []),
+        ...(body.attachment ? [body.attachment] : []),
+      ];
 
       let media = undefined;
       let messageType: 'TEXT' | 'PDF' | 'DOCUMENT' | 'IMAGE' | 'VOICE_NOTE' = 'TEXT';
-      if (body.attachment) {
-        const buffer = Buffer.from(body.attachment.contentBase64, 'base64');
-        media = {
-          buffer,
-          mimeType: body.attachment.mimeType,
-          fileName: body.attachment.fileName,
-          fileSizeBytes: buffer.byteLength,
-        };
-        if (body.attachment.mimeType.includes('pdf')) {
-          messageType = 'PDF';
-        } else if (body.attachment.mimeType.startsWith('image/')) {
-          messageType = 'IMAGE';
-        } else {
-          messageType = 'DOCUMENT';
+
+      if (allUploads.length > 0) {
+        const { customer } = await deps.customerService.resolveCustomerFromWhatsApp({
+          senderNumberOrJid: senderJid,
+          displayName: resolvedDisplayName,
+        });
+
+        const storedSessionFiles: Array<{ filename: string; path: string }> = [];
+        const extractedSnippets: string[] = [];
+
+        for (let idx = 0; idx < allUploads.length; idx++) {
+          const item = allUploads[idx];
+          const buffer = Buffer.from(item.contentBase64, 'base64');
+
+          if (idx === 0) {
+            media = {
+              buffer,
+              mimeType: item.mimeType,
+              fileName: item.fileName,
+              fileSizeBytes: buffer.byteLength,
+            };
+            if (item.mimeType.includes('pdf')) {
+              messageType = 'PDF';
+            } else if (item.mimeType.startsWith('image/')) {
+              messageType = 'IMAGE';
+            } else {
+              messageType = 'DOCUMENT';
+            }
+          }
+
+          try {
+            const safeAttName = path.basename(item.fileName).replace(/[^a-zA-Z0-9._-]/g, '_');
+            const attDir = path.resolve(
+              process.cwd(),
+              'node_modules',
+              '.cache',
+              'nexora-attachments',
+              customer.id,
+            );
+            await fs.mkdir(attDir, { recursive: true });
+            const attPath = path.join(attDir, `${Date.now()}-${safeAttName}`);
+            await fs.writeFile(attPath, buffer);
+            storedSessionFiles.push({
+              filename: item.fileName,
+              path: attPath,
+            });
+
+            const processed = await deps.documentService.processAndStoreDocument({
+              customerId: customer.id,
+              originalFileName: item.fileName,
+              mimeType: item.mimeType,
+              buffer,
+            });
+            if (idx > 0 && processed.extractedText) {
+              extractedSnippets.push(
+                `[Attached Reference Document (${item.fileName})]:\n${processed.extractedText.slice(0, 8000)}`,
+              );
+            }
+          } catch {
+            const fallbackText = await deps.documentService
+              .extractTextOnly(buffer, item.mimeType, item.fileName)
+              .catch(() => '');
+            if (idx > 0 && fallbackText) {
+              extractedSnippets.push(
+                `[Attached Reference Document (${item.fileName})]:\n${fallbackText.slice(0, 8000)}`,
+              );
+            }
+          }
+        }
+
+        if (storedSessionFiles.length > 0) {
+          autonomousWorkerService.registerSessionAttachments(customer.id, storedSessionFiles);
+        }
+        if (extractedSnippets.length > 0) {
+          resolvedText = resolvedText
+            ? `${resolvedText}\n\n${extractedSnippets.join('\n\n')}`
+            : extractedSnippets.join('\n\n');
         }
       }
 
@@ -987,11 +1064,55 @@ export async function buildApiServer(deps: ApiServerDependencies): Promise<Fasti
         senderName: z.string().optional(),
         inReplyTo: z.string().optional(),
         references: z.array(z.string()).optional(),
+        attachments: z
+          .array(
+            z.object({
+              fileName: z.string().min(1),
+              mimeType: z.string().min(1),
+              contentBase64: z.string().min(1),
+            }),
+          )
+          .optional(),
       })
       .parse(request.body);
 
     const sent = await imapMonitorService.sendSubmissionFollowUp(body);
     return { ok: true, data: sent };
+  });
+
+  app.post('/api/v1/documents/extract', async (request) => {
+    const body = z
+      .object({
+        files: z
+          .array(
+            z.object({
+              fileName: z.string().min(1),
+              mimeType: z.string().default('application/octet-stream'),
+              contentBase64: z.string().min(1),
+            }),
+          )
+          .min(1)
+          .max(10),
+      })
+      .parse(request.body);
+
+    const results = await Promise.all(
+      body.files.map(async (f) => {
+        const buffer = Buffer.from(f.contentBase64, 'base64');
+        const extractedText = await deps.documentService
+          .extractTextOnly(buffer, f.mimeType, f.fileName)
+          .catch(() => '');
+        return {
+          fileName: f.fileName,
+          mimeType: f.mimeType,
+          fileSizeBytes: buffer.byteLength,
+          extractedText: extractedText.slice(0, 12000),
+          charCount: extractedText.length,
+        };
+      }),
+    );
+
+    return { ok: true, data: results };
   });
 
   app.post('/api/v1/submissions/inbound-webhook', async (request) => {
