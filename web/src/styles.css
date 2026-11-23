@@ -31,19 +31,61 @@ body {
 }
 
 /* Scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.24) transparent;
+}
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #3e3e3e;
+  background: rgba(148, 163, 184, 0.24);
   border-radius: 999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #555555;
+  background: rgba(56, 189, 248, 0.48);
+}
+
+/* Modal Scrollbars — inset from rounded corners */
+.dossier-modal-card,
+.auth-modal-card,
+.dossier-modal-overlay *,
+.auth-modal-overlay *,
+.pdf-review-split * {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.22) transparent;
+}
+.dossier-modal-card::-webkit-scrollbar,
+.auth-modal-card::-webkit-scrollbar,
+.dossier-modal-overlay *::-webkit-scrollbar,
+.auth-modal-overlay *::-webkit-scrollbar,
+.pdf-review-split *::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+.dossier-modal-card::-webkit-scrollbar-track,
+.auth-modal-card::-webkit-scrollbar-track {
+  background: transparent;
+  margin: 12px 0;
+}
+.dossier-modal-card::-webkit-scrollbar-thumb,
+.auth-modal-card::-webkit-scrollbar-thumb,
+.dossier-modal-overlay *::-webkit-scrollbar-thumb,
+.auth-modal-overlay *::-webkit-scrollbar-thumb,
+.pdf-review-split *::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.22);
+  border-radius: 999px;
+}
+.dossier-modal-card::-webkit-scrollbar-thumb:hover,
+.auth-modal-card::-webkit-scrollbar-thumb:hover,
+.dossier-modal-overlay *::-webkit-scrollbar-thumb:hover,
+.auth-modal-overlay *::-webkit-scrollbar-thumb:hover,
+.pdf-review-split *::-webkit-scrollbar-thumb:hover {
+  background: rgba(56, 189, 248, 0.5);
 }
 
 /* App Shell */
