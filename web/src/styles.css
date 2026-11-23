@@ -1571,6 +1571,26 @@ body {
     overflow-y: auto !important;
   }
   .pdf-review-split iframe {
-    min-height: 360px;
+    min-height: 280px;
+  }
+  .pdf-review-modal-card {
+    width: calc(100vw - 16px) !important;
+    max-width: calc(100vw - 16px) !important;
+    height: 92dvh !important;
+    border-radius: 16px !important;
+  }
+  .pdf-review-modal-header {
+    padding: 10px 12px !important;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .pdf-review-modal-controls {
+    padding: 14px !important;
+    overflow-y: visible !important;
+  }
+  .pdf-review-viewer-pane {
+    min-height: 280px;
+    border-right: none !important;
+    border-bottom: 1px solid #2a2a2a;
   }
 }

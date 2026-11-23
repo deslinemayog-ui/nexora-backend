@@ -3999,6 +3999,7 @@ export const App: React.FC = () => {
           style={{ zIndex: 1050 }}
         >
           <div
+            className="pdf-review-modal-card"
             onClick={(e) => e.stopPropagation()}
             style={{
               background: '#18181b',
@@ -4013,35 +4014,70 @@ export const App: React.FC = () => {
             }}
           >
             <div
+              className="pdf-review-modal-header"
               style={{
                 padding: '14px 20px',
                 borderBottom: '1px solid #2a2a2a',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'space-between',
+                gap: '10px',
               }}
             >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <FileText className="w-5 h-5 text-cyan-400" />
-                <div>
-                  <div className="text-sm font-bold text-white">{previewPdfDoc.fileName}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0, flex: '1 1 180px' }}>
+                <FileText className="w-5 h-5 text-cyan-400 shrink-0" />
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div
+                    className="text-sm font-bold text-white"
+                    style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                    title={previewPdfDoc.fileName}
+                  >
+                    {previewPdfDoc.fileName}
+                  </div>
                   <div className="text-xs text-slate-400">
-                    {(previewPdfDoc.fileSizeBytes / 1024).toFixed(1)} KB • Review & Edit PDF before approval
+                    {(previewPdfDoc.fileSizeBytes / 1024).toFixed(1)} KB • Review & Edit PDF
                   </div>
                 </div>
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <a
-                  href={resolveApiUrl(previewPdfDoc.downloadUrl)}
-                  target="_blank"
-                  rel="noopener noreferrer"
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const directUrl = resolveApiUrl(previewPdfDoc.downloadUrl);
+                    try {
+                      const targetUrl =
+                        pdfPreviewBlobUrl ||
+                        (await (async () => {
+                          const r = await fetch(directUrl);
+                          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                          const b = await r.blob();
+                          return URL.createObjectURL(new Blob([b], { type: 'application/pdf' }));
+                        })());
+                      const opened = window.open(targetUrl, '_blank', 'noopener,noreferrer');
+                      if (!opened) {
+                        const a = document.createElement('a');
+                        a.href = targetUrl;
+                        a.download = previewPdfDoc.fileName;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                      }
+                    } catch {
+                      window.open(directUrl, '_blank', 'noopener,noreferrer');
+                    }
+                  }}
                   className="chat-action-btn"
-                  style={{ textDecoration: 'none', fontSize: '12px' }}
+                  style={{ fontSize: '12px', cursor: 'pointer' }}
                 >
                   <Download className="w-3.5 h-3.5" />
-                  <span>Open / Download</span>
-                </a>
-                <button onClick={() => setPreviewPdfDoc(null)} className="sidebar-icon-btn">
+                  <span>Open / Save</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPreviewPdfDoc(null)}
+                  className="sidebar-icon-btn"
+                  title="Close modal"
+                >
                   <X className="w-4 h-4" />
                 </button>
               </div>
@@ -4049,7 +4085,19 @@ export const App: React.FC = () => {
 
             <div className="pdf-review-split" style={{ flex: 1, display: 'grid', gridTemplateColumns: '1.35fr 0.85fr', minHeight: 0 }}>
               {/* Left: Live Embedded PDF Viewer */}
-              <div style={{ background: '#0f172a', borderRight: '1px solid #2a2a2a', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <div
+                className="pdf-review-viewer-pane"
+                style={{
+                  background: '#0f172a',
+                  borderRight: '1px solid #2a2a2a',
+                  height: '100%',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  minHeight: 0,
+                }}
+              >
                 {pdfPreviewLoading ? (
                   <div style={{ textAlign: 'center', color: '#94a3b8', padding: '24px' }}>
                     <div className="text-sm font-medium text-white mb-1">Loading PDF preview...</div>
@@ -4061,30 +4109,34 @@ export const App: React.FC = () => {
                       Could not render inline preview{pdfPreviewError ? ` (${pdfPreviewError})` : ''}
                     </div>
                     <div className="text-xs text-slate-400 mb-4">
-                      You can still open or download the document directly below.
+                      Tap below to open or save the PDF directly on your device.
                     </div>
                     <a
                       href={resolveApiUrl(previewPdfDoc.downloadUrl)}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="chat-action-btn"
+                      download={previewPdfDoc.fileName}
+                      className="chat-action-btn primary"
                       style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
                     >
                       <Download className="w-3.5 h-3.5" />
-                      <span>Open PDF in New Tab</span>
+                      <span>Open / Download PDF</span>
                     </a>
                   </div>
                 ) : (
                   <iframe
                     src={pdfPreviewBlobUrl}
                     title={previewPdfDoc.fileName}
-                    style={{ width: '100%', height: '100%', border: 'none' }}
+                    style={{ width: '100%', height: '100%', border: 'none', flex: 1 }}
                   />
                 )}
               </div>
 
               {/* Right: Reference Edit Prompt & Approval Controls */}
-              <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '14px', overflowY: 'auto' }}>
+              <div
+                className="pdf-review-modal-controls"
+                style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '14px', overflowY: 'auto' }}
+              >
                 <div
                   style={{
                     padding: '10px 12px',
@@ -4146,7 +4198,17 @@ export const App: React.FC = () => {
                   <div className="flex items-center justify-between" style={{ marginBottom: '6px' }}>
                     <span className="text-xs font-semibold text-slate-300">Submissions to Send</span>
                     <span className="text-xs font-bold text-emerald-400">
-                      ${(submissionLimit * (activeConversation?.agentType === 'VISA_AGENT' ? 2 : 1)).toFixed(2)}
+                      ${(
+                        submissionLimit *
+                        (() => {
+                          const activeAgent = activeConversation?.agentType || 'JOB_AGENT';
+                          const match = agentCatalog.find((a) => a.agentType === activeAgent);
+                          if (match) return match.costPerSubmissionCents / 100;
+                          if (activeAgent === 'VISA_AGENT') return 2;
+                          if (activeAgent === 'JOB_AGENT') return 0.25;
+                          return 1;
+                        })()
+                      ).toFixed(2)}
                     </span>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
