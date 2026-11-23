@@ -207,44 +207,51 @@ export class OpenClawService {
 
         const nvidiaApiKey = process.env.NVIDIA_API_KEY?.trim();
         if (nvidiaApiKey) {
-          try {
-            const nvidiaModel = process.env.NVIDIA_MODEL || 'meta/llama-3.3-70b-instruct';
-            const nimRes = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
-              method: 'POST',
-              headers: {
-                Authorization: `Bearer ${nvidiaApiKey}`,
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({
-                model: nvidiaModel,
-                messages,
-                temperature: 0.4,
-                max_tokens: 2048,
-              }),
-              signal: AbortSignal.timeout(25000),
-            });
+          const candidateModels = [
+            process.env.NVIDIA_MODEL?.trim(),
+            'google/gemma-4-31b-it',
+            'mistralai/mistral-large-4-1t-a52b',
+          ].filter((m): m is string => Boolean(m));
 
-            if (nimRes.ok) {
-              const nimJson = (await nimRes.json()) as {
-                id?: string;
-                choices?: Array<{ message?: { content?: string } }>;
-                usage?: { total_tokens?: number };
-              };
-              const nimText = nimJson.choices?.[0]?.message?.content?.trim();
-              if (nimText) {
-                return {
-                  runId: nimJson.id || `nim-${idempotencyKey}`,
-                  sessionKey: input.sessionKey,
-                  responseText: nimText,
-                  tokensUsed: nimJson.usage?.total_tokens ?? 0,
-                  toolCallsCount: 0,
-                  durationMs: Date.now() - startTime,
-                  status: 'COMPLETED',
+          for (const nvidiaModel of candidateModels) {
+            try {
+              const nimRes = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                  Authorization: `Bearer ${nvidiaApiKey}`,
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                  model: nvidiaModel,
+                  messages,
+                  temperature: 0.4,
+                  max_tokens: 2500,
+                }),
+                signal: AbortSignal.timeout(25000),
+              });
+
+              if (nimRes.ok) {
+                const nimJson = (await nimRes.json()) as {
+                  id?: string;
+                  choices?: Array<{ message?: { content?: string } }>;
+                  usage?: { total_tokens?: number };
                 };
+                const nimText = nimJson.choices?.[0]?.message?.content?.trim();
+                if (nimText) {
+                  return {
+                    runId: nimJson.id || `nim-${idempotencyKey}`,
+                    sessionKey: input.sessionKey,
+                    responseText: nimText,
+                    tokensUsed: nimJson.usage?.total_tokens ?? 0,
+                    toolCallsCount: 0,
+                    durationMs: Date.now() - startTime,
+                    status: 'COMPLETED',
+                  };
+                }
               }
+            } catch (nimErr) {
+              logger.debug({ nimErr, nvidiaModel }, 'Direct NVIDIA NIM API call failed; trying next model');
             }
-          } catch (nimErr) {
-            logger.debug({ nimErr }, 'Direct NVIDIA NIM API call failed; continuing fallback');
           }
         }
 
@@ -332,8 +339,16 @@ export class OpenClawService {
 
     switch (input.agentType) {
       case 'JOB_AGENT': {
-        const nameMatch = rawMsg.match(/^([A-Za-z]+(?:\s+[A-Za-z]+)+)\s+wants you to help/i);
-        const candidateName = nameMatch ? nameMatch[1].trim() : 'James Phiri';
+        const nameSource = [
+          rawMsg,
+          input.systemInstructions,
+          ...(input.conversationContext ?? []).map((c) => c.content),
+        ].join('\n');
+        const nameMatch =
+          nameSource.match(/(?:Candidate\s+Name|Full\s+Name|Applicant\s+Name|My\s+name\s+is)\s*[:\-]?[ \t]*([A-Za-z]+(?:[ \t]+[A-Za-z]+)+)/i) ||
+          nameSource.match(/(?:^|\n)([A-Za-z]+(?:[ \t]+[A-Za-z]+)+)[ \t]+wants[ \t]+(?:you[ \t]+to[ \t]+)?help/i) ||
+          input.systemInstructions.match(/Customer Profile Summary:\s*Name:\s*([^|\n]+)/i);
+        const candidateName = nameMatch?.[1]?.trim() || 'Candidate';
 
         const isInitialIntake =
           /\b(?:wants you to help .* apply for a job|doesn't have a cv|does not have a cv|don't have a cv|no cv|without a cv|interview me|help me draft|draft.*(?:cv|resume)|compile.*(?:cv|resume)|build.*(?:cv|resume)|make.*(?:cv|resume))\b/i.test(

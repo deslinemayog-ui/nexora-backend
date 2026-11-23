@@ -480,7 +480,7 @@ export class AutonomousWorkerService {
           /\b(?:senior software developer|full[- ]stack(?: software)? engineer|software engineer|software developer|tech lead|developer|engineer|project manager|accountant|analyst)\b/i,
         );
         const targetRole = roleMatch ? roleMatch[0] : 'Senior Software Developer';
-        const candidateName = params.customerName || 'James Phiri';
+        const candidateName = params.customerName || 'Candidate';
 
         const knownSkills = [
           'React', 'React Native', 'Node.js', 'TypeScript', 'Redux', 'AWS',

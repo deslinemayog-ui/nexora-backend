@@ -1477,7 +1477,7 @@ export const App: React.FC = () => {
               conversationId: currentConvId,
               agentType: 'JOB_AGENT',
               candidate: {
-                fullName: currentUser?.displayName || 'James Phiri',
+                fullName: candidateName || currentUser?.displayName || 'Candidate',
                 email: userEmail,
                 phone: getSessionPhoneNumber(currentUser),
                 targetRole: 'Full-Stack Software Engineer',
@@ -2201,8 +2201,8 @@ export const App: React.FC = () => {
                             } else if (act.action === 'confirm_apply') {
                               handleSendMessage("Looks good, search and apply", activeConvId || undefined, 'JOB_AGENT');
                             } else if (act.action === 'draft_cv') {
-                              const candidateName = currentUser?.displayName || 'James Phiri';
-                              const prompt = `${candidateName} wants you to help him apply for a job but he doesn't have a CV. Please interview me step-by-step to understand what I do, my work experience, and my education so we can build a professional resume, and then search and apply for jobs.`;
+                              const resolvedName = candidateName || currentUser?.displayName || 'Candidate';
+                              const prompt = `${resolvedName} wants you to help apply for a job but doesn't have a CV yet. Please interview me step-by-step to understand what I do, my work experience, and my education so we can build a professional resume, and then search and apply for jobs.`;
                               handleSendMessage(prompt, activeConvId || undefined, 'JOB_AGENT');
                             }
                           }}

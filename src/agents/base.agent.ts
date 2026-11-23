@@ -103,7 +103,7 @@ export abstract class BaseSpecialistAgent implements ISpecialistAgent {
         requiredFields:
           'Full Name, Email Address, Phone Number, Target Role, Target Location/Country, Work Experience, Technical Skills, and Education',
         template:
-          '`# 📄 CURRICULUM VITAE — <Name>`, `## 🎯 Target Role`, `## 📍 Location & Availability`, `## 📞 Contact`, `## 👤 Professional Summary`, `## 🛠️ Core Technical Skills`, `## 💼 Work Experience` with `### <Company> — <Role>` and `**<Dates>**` followed by 3–5 detailed, achievement-oriented bullet points for EVERY company mentioned, and `## 🎓 Education`',
+          '`# 📄 CURRICULUM VITAE — <Exact Candidate Name From Form/Profile>`, `## 🎯 Target Role`, `## 📍 Location & Availability`, `## 📞 Contact`, `## 👤 Professional Summary` (4-sentence executive summary highlighting impact, scale, and years of experience), `## 🛠️ Core Technical Skills` (richly categorized comma-separated technical skills), `## 💼 Work Experience` with `### <Company> — <Role>` and `**<Dates>**` followed by 4–6 detailed, quantified, achievement-oriented bullet points for EVERY company mentioned (never collapse employers into one generic entry), and `## 🎓 Education`',
       },
       [AgentType.VISA_AGENT]: {
         label: 'Relocation & Visa Pathway Dossier',
