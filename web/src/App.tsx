@@ -510,15 +510,15 @@ export const App: React.FC = () => {
           messages: savedMsgs,
           tasks: Array.isArray(t.targets)
             ? t.targets.map((s: any, idx: number) => ({
-                id: s.receiptId || `sub-${idx}`,
-                targetName: s.targetName || s.name || 'Target',
-                category: s.category || 'Submission',
-                portalUrl: s.portalUrl || '#',
-                contactEmail: s.deliveredToEmail || s.contactEmail,
-                status: s.status || 'SUBMITTED',
-                receiptId: s.receiptId || `SUB-${idx}`,
-                submittedAt: s.submittedAt || new Date().toISOString(),
-              }))
+              id: s.receiptId || `sub-${idx}`,
+              targetName: s.targetName || s.name || 'Target',
+              category: s.category || 'Submission',
+              portalUrl: s.portalUrl || '#',
+              contactEmail: s.deliveredToEmail || s.contactEmail,
+              status: s.status || 'SUBMITTED',
+              receiptId: s.receiptId || `SUB-${idx}`,
+              submittedAt: s.submittedAt || new Date().toISOString(),
+            }))
             : [],
         };
       });
@@ -927,10 +927,10 @@ export const App: React.FC = () => {
           attachments:
             replyAttachments.length > 0
               ? replyAttachments.map((a) => ({
-                  fileName: a.fileName,
-                  mimeType: a.mimeType,
-                  contentBase64: a.contentBase64,
-                }))
+                fileName: a.fileName,
+                mimeType: a.mimeType,
+                contentBase64: a.contentBase64,
+              }))
               : undefined,
         }),
       });
@@ -1517,10 +1517,10 @@ export const App: React.FC = () => {
       attachedDocs:
         activeAttachments.length > 0
           ? activeAttachments.map((a) => ({
-              fileName: a.fileName,
-              mimeType: a.mimeType,
-              fileSizeBytes: a.fileSizeBytes,
-            }))
+            fileName: a.fileName,
+            mimeType: a.mimeType,
+            fileSizeBytes: a.fileSizeBytes,
+          }))
           : undefined,
       createdAt: new Date().toISOString(),
     };
@@ -1563,10 +1563,10 @@ export const App: React.FC = () => {
           attachments:
             activeAttachments.length > 0
               ? activeAttachments.map((a) => ({
-                  fileName: a.fileName,
-                  mimeType: a.mimeType,
-                  contentBase64: a.contentBase64,
-                }))
+                fileName: a.fileName,
+                mimeType: a.mimeType,
+                contentBase64: a.contentBase64,
+              }))
               : undefined,
         }),
       });
@@ -2754,9 +2754,9 @@ export const App: React.FC = () => {
             style={
               isDraggingChatFiles
                 ? {
-                    borderColor: '#22d3ee',
-                    boxShadow: '0 0 0 2px rgba(34, 211, 238, 0.3)',
-                  }
+                  borderColor: '#22d3ee',
+                  boxShadow: '0 0 0 2px rgba(34, 211, 238, 0.3)',
+                }
                 : undefined
             }
           >
@@ -2834,10 +2834,10 @@ export const App: React.FC = () => {
                 style={
                   deepThinkMode
                     ? {
-                        background: 'rgba(37, 99, 235, 0.25)',
-                        borderColor: '#3b82f6',
-                        color: '#93c5fd',
-                      }
+                      background: 'rgba(37, 99, 235, 0.25)',
+                      borderColor: '#3b82f6',
+                      color: '#93c5fd',
+                    }
                     : undefined
                 }
                 title={deepThinkMode ? 'Deep Thinking is ON (click to turn off)' : 'Enable Deep Thinking reasoning'}
@@ -2899,10 +2899,10 @@ export const App: React.FC = () => {
                 style={
                   isRecording
                     ? {
-                        background: 'rgba(239, 68, 68, 0.25)',
-                        borderColor: '#ef4444',
-                        color: '#fca5a5',
-                      }
+                      background: 'rgba(239, 68, 68, 0.25)',
+                      borderColor: '#ef4444',
+                      color: '#fca5a5',
+                    }
                     : undefined
                 }
                 title={isRecording ? 'Stop voice recording' : 'Start voice input'}
@@ -3523,7 +3523,7 @@ export const App: React.FC = () => {
                     style={{ flex: 1 }}
                   >
                     <Check className="w-4 h-4" />
-                    <span>Continue & Prepare for Review</span>
+                    <span>Prepare for Review</span>
                   </button>
                   <button
                     type="button"
@@ -3532,7 +3532,7 @@ export const App: React.FC = () => {
                     style={{ padding: '0 14px', whiteSpace: 'nowrap' }}
                     title="Let AI interview you step-by-step in chat"
                   >
-                    <span>Interview Me in Chat</span>
+                    <span>Interview Me</span>
                   </button>
                 </div>
               </form>
