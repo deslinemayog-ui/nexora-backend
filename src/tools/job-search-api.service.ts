@@ -2,7 +2,15 @@ import { logger } from '../utils/logger';
 
 export interface JobApiListing {
   id: string;
-  source: 'indeed_jsearch' | 'indeed_publisher' | 'adzuna' | 'remotive' | 'arbeitnow' | 'jobicy' | 'themuse';
+  source:
+    | 'indeed_jsearch'
+    | 'indeed_publisher'
+    | 'adzuna'
+    | 'remotive'
+    | 'arbeitnow'
+    | 'jobicy'
+    | 'themuse'
+    | 'company_direct';
   title: string;
   company: string;
   location: string;
@@ -33,25 +41,107 @@ function stripHtml(html: string): string {
     .trim();
 }
 
-function extractEmailFromText(text: string): string | undefined {
-  const match = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
-  return match?.[0];
+const AGGREGATOR_AND_NOISE_DOMAINS = [
+  'adzuna.',
+  'remotive.com',
+  'arbeitnow.com',
+  'jobicy.com',
+  'themuse.com',
+  'indeed.com',
+  'linkedin.com',
+  'glassdoor.',
+  'ziprecruiter.',
+  'monster.',
+  'careerjet.',
+  'pnet.co.za',
+  'careers24.com',
+  'gumtree.',
+  'bizcommunity.',
+  'recruit.net',
+  'jooble.',
+  'talent.com',
+  'neuvoo.',
+  'simplyhired.',
+  'sentry.io',
+  'wixpress.com',
+  'example.com',
+  'schema.org',
+  'w3.org',
+  'googleapis.com',
+  'cloudflare.com',
+  'duckduckgo.com',
+  'facebook.com',
+  'instagram.com',
+  'twitter.com',
+  'youtube.com',
+  'tiktok.com',
+];
+
+function isAggregatorOrNoiseHost(hostOrEmail: string): boolean {
+  const lower = hostOrEmail.toLowerCase();
+  return AGGREGATOR_AND_NOISE_DOMAINS.some((d) => lower.includes(d));
 }
 
-function guessCompanyEmail(company: string, url: string): string {
+function isValidCompanyEmail(email?: string): email is string {
+  if (!email) return false;
+  const clean = email.trim().toLowerCase();
+  if (!/^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/.test(clean)) return false;
+  if (/\.(png|jpg|jpeg|gif|svg|webp|css|js)$/i.test(clean)) return false;
+  if (/^(noreply|no-reply|donotreply|mailer-daemon|postmaster|support@|privacy@|legal@|dmca@)/i.test(clean)) {
+    return false;
+  }
+  const domain = clean.split('@')[1] || '';
+  if (isAggregatorOrNoiseHost(domain)) return false;
+  return true;
+}
+
+function extractEmailFromText(text: string): string | undefined {
+  const mailtoMatches = [...text.matchAll(/mailto:([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/gi)]
+    .map((m) => m[1])
+    .filter(isValidCompanyEmail);
+  const textMatches = (text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [])
+    .filter(isValidCompanyEmail);
+
+  const candidates = Array.from(new Set([...mailtoMatches, ...textMatches]));
+  if (candidates.length === 0) return undefined;
+
+  // Prefer hiring/careers/HR/info/contact addresses over random personal/other addresses
+  const preferred = candidates.find((e) =>
+    /^(careers|jobs|hr|recruitment|recruit|talent|hiring|apply|info|contact|admin|enquiries|hello)@/i.test(e),
+  );
+  return preferred || candidates[0];
+}
+
+function unwrapDuckDuckGoUrl(rawHref: string): string {
   try {
-    const host = new URL(url).hostname.replace(/^www\./, '');
-    if (
-      host &&
-      !['remotive.com', 'arbeitnow.com', 'jobicy.com', 'themuse.com', 'indeed.com', 'linkedin.com'].includes(host)
-    ) {
-      return `careers@${host}`;
+    if (rawHref.includes('uddg=')) {
+      const u = new URL(rawHref.startsWith('http') ? rawHref : `https://duckduckgo.com${rawHref}`);
+      const target = u.searchParams.get('uddg');
+      if (target && target.startsWith('http')) return target;
     }
   } catch {
-    // ignore URL parse error
+    // ignore
   }
-  const slug = company.toLowerCase().replace(/[^a-z0-9]/g, '') || 'company';
-  return `careers@${slug}.com`;
+  return rawHref;
+}
+
+async function fetchHtmlQuick(url: string, timeoutMs = 4500): Promise<{ finalUrl: string; html: string } | null> {
+  try {
+    const res = await fetch(url, {
+      redirect: 'follow',
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+        Accept: 'text/html,application/xhtml+xml',
+      },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!res.ok) return null;
+    const html = await res.text();
+    return { finalUrl: res.url || url, html };
+  } catch {
+    return null;
+  }
 }
 
 export function scoreJobListing(
@@ -107,6 +197,7 @@ export class JobSearchApiService {
     const sourcesUsed: string[] = [];
 
     const tasks: Array<Promise<{ source: string; items: Array<Omit<JobApiListing, 'matchScore'>> }>> = [
+      this.fetchDirectIndustryCompanies(query),
       this.fetchRemotive(query),
       this.fetchArbeitnow(query),
       this.fetchJobicy(query),
@@ -150,13 +241,73 @@ export class JobSearchApiService {
 
     scored.sort((a, b) => b.matchScore - a.matchScore);
 
+    // Enrich top candidates by scraping Adzuna/job detail pages & searching real company websites for actual emails
+    const candidatesToEnrich = scored.slice(0, Math.min(scored.length, Math.max(limit * 2, 10)));
+    await Promise.allSettled(
+      candidatesToEnrich.map(async (job) => {
+        if (isValidCompanyEmail(job.contactEmail)) {
+          job.matchScore += 50;
+          return;
+        }
+
+        // 1. Scrape the job detail / Adzuna redirect page for real email & fuller description
+        if (job.applyUrl && job.applyUrl.startsWith('http')) {
+          const detailPage = await fetchHtmlQuick(job.applyUrl, 4500);
+          if (detailPage) {
+            const pageText = stripHtml(detailPage.html);
+            const emailOnPage = extractEmailFromText(detailPage.html) || extractEmailFromText(pageText);
+            if (isValidCompanyEmail(emailOnPage)) {
+              job.contactEmail = emailOnPage;
+            }
+            if (pageText.length > job.description.length + 80) {
+              job.description = pageText.slice(0, 700);
+            }
+            if (detailPage.finalUrl && !isAggregatorOrNoiseHost(detailPage.finalUrl)) {
+              job.applyUrl = detailPage.finalUrl;
+            }
+          }
+        }
+
+        // 2. If still no verified company email, search DuckDuckGo for the real company's contact/careers email
+        const genericCompany = /^(adzuna employer|hiring company|remote company|tech employer)$/i.test(
+          job.company.trim(),
+        );
+        if (!isValidCompanyEmail(job.contactEmail) && !genericCompany) {
+          const found = await this.findRealCompanyEmailViaWeb(job.company, query.targetCountry);
+          if (found?.email) {
+            job.contactEmail = found.email;
+            if (found.websiteUrl && isAggregatorOrNoiseHost(job.url)) {
+              job.url = found.websiteUrl;
+            }
+          }
+        }
+
+        if (isValidCompanyEmail(job.contactEmail)) {
+          job.matchScore += 50;
+        } else {
+          job.contactEmail = undefined;
+        }
+      }),
+    );
+
+    scored.sort((a, b) => b.matchScore - a.matchScore);
+
+    // Prefer jobs that actually have a verified real company email!
+    const withEmail = scored.filter((j) => isValidCompanyEmail(j.contactEmail));
+    const finalJobs = (withEmail.length >= limit ? withEmail : [...withEmail, ...scored.filter((j) => !isValidCompanyEmail(j.contactEmail))]).slice(0, limit);
+
     logger.info(
-      { totalFound: scored.length, returned: Math.min(scored.length, limit), sourcesUsed },
-      'Aggregated live jobs from Job Search APIs',
+      {
+        totalFound: scored.length,
+        withVerifiedEmail: withEmail.length,
+        returned: finalJobs.length,
+        sourcesUsed,
+      },
+      'Aggregated & email-enriched live jobs',
     );
 
     return {
-      jobs: scored.slice(0, limit),
+      jobs: finalJobs,
       sourcesUsed,
     };
   }
@@ -191,7 +342,7 @@ export class JobSearchApiService {
           applyUrl,
           salary: j.job_min_salary && j.job_max_salary ? `${j.job_min_salary}-${j.job_max_salary}` : undefined,
           description: desc.slice(0, 500),
-          contactEmail: extractEmailFromText(desc) || guessCompanyEmail(company, applyUrl),
+          contactEmail: extractEmailFromText(desc),
           tags: Array.isArray(j.job_required_skills) ? j.job_required_skills : [],
         };
       });
@@ -233,7 +384,7 @@ export class JobSearchApiService {
           url: applyUrl,
           applyUrl,
           description: desc,
-          contactEmail: extractEmailFromText(desc) || guessCompanyEmail(company, applyUrl),
+          contactEmail: extractEmailFromText(desc),
           tags: [],
         };
       });
@@ -277,7 +428,7 @@ export class JobSearchApiService {
           applyUrl,
           salary: j.salary_min && j.salary_max ? `${j.salary_min}-${j.salary_max}` : undefined,
           description: desc.slice(0, 500),
-          contactEmail: extractEmailFromText(desc) || guessCompanyEmail(company, applyUrl),
+          contactEmail: extractEmailFromText(desc),
           tags: [],
         };
       });
@@ -310,7 +461,7 @@ export class JobSearchApiService {
           applyUrl,
           salary: j.salary || undefined,
           description: desc.slice(0, 500),
-          contactEmail: extractEmailFromText(desc) || guessCompanyEmail(company, applyUrl),
+          contactEmail: extractEmailFromText(desc),
           tags: Array.isArray(j.tags) ? j.tags.slice(0, 6) : [],
         };
       });
@@ -350,7 +501,7 @@ export class JobSearchApiService {
           url: applyUrl,
           applyUrl,
           description: desc.slice(0, 500),
-          contactEmail: extractEmailFromText(desc) || guessCompanyEmail(company, applyUrl),
+          contactEmail: extractEmailFromText(desc),
           tags: Array.isArray(j.tags) ? j.tags.slice(0, 6) : [],
         };
       });
@@ -382,13 +533,151 @@ export class JobSearchApiService {
           url: applyUrl,
           applyUrl,
           description: desc.slice(0, 500),
-          contactEmail: extractEmailFromText(desc) || guessCompanyEmail(company, applyUrl),
+          contactEmail: extractEmailFromText(desc),
           tags: Array.isArray(j.jobIndustry) ? j.jobIndustry : [],
         };
       });
       return { source: 'jobicy', items };
     } catch {
       return { source: 'jobicy', items: [] };
+    }
+  }
+
+  /**
+   * Searches DuckDuckGo HTML for a specific company's real website & hiring/contact email
+   * (e.g. "Lesedi Cleaning" -> info@lesedicleaning.co.za, "MTN" -> info@mtn.co.za).
+   */
+  private async findRealCompanyEmailViaWeb(
+    companyName: string,
+    targetCountry?: string,
+  ): Promise<{ email?: string; websiteUrl?: string } | null> {
+    try {
+      const q = `"${companyName}" ${targetCountry || ''} email OR careers OR contact`;
+      const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`;
+      const ddg = await fetchHtmlQuick(ddgUrl, 4500);
+      if (!ddg) return null;
+
+      const snippetEmail = extractEmailFromText(stripHtml(ddg.html));
+      const links = [...ddg.html.matchAll(/class="result__a"[^>]*href="([^"]+)"/gi)]
+        .map((m) => unwrapDuckDuckGoUrl(m[1]))
+        .filter((u) => u.startsWith('http') && !isAggregatorOrNoiseHost(u));
+
+      if (snippetEmail) {
+        return { email: snippetEmail, websiteUrl: links[0] };
+      }
+
+      for (const siteUrl of links.slice(0, 2)) {
+        const page = await fetchHtmlQuick(siteUrl, 4000);
+        if (!page) continue;
+        const found = extractEmailFromText(page.html) || extractEmailFromText(stripHtml(page.html));
+        if (found) {
+          return { email: found, websiteUrl: page.finalUrl };
+        }
+        // Try /contact or /careers on the same origin
+        try {
+          const origin = new URL(page.finalUrl).origin;
+          for (const sub of ['/contact', '/contact-us', '/careers']) {
+            const subPage = await fetchHtmlQuick(`${origin}${sub}`, 3000);
+            if (!subPage) continue;
+            const subEmail =
+              extractEmailFromText(subPage.html) || extractEmailFromText(stripHtml(subPage.html));
+            if (subEmail) {
+              return { email: subEmail, websiteUrl: page.finalUrl };
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Discovers real hiring companies in the user's industry & location directly via web search
+   * (e.g. cleaning companies, construction firms, banks, telecoms) and scrapes their real emails.
+   */
+  private async fetchDirectIndustryCompanies(
+    query: JobSearchQuery,
+  ): Promise<{ source: string; items: Array<Omit<JobApiListing, 'matchScore'>> }> {
+    try {
+      const country = query.targetCountry || '';
+      const q = `${query.role} company ${country} ("info@" OR "careers@" OR "hr@")`;
+      const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`;
+      const ddg = await fetchHtmlQuick(ddgUrl, 5000);
+      if (!ddg) return { source: 'company_direct', items: [] };
+
+      const linkMatches = [
+        ...ddg.html.matchAll(/class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi),
+      ];
+
+      const targets: Array<{ url: string; title: string }> = [];
+      const seenHosts = new Set<string>();
+      for (const m of linkMatches) {
+        const url = unwrapDuckDuckGoUrl(m[1]);
+        if (!url.startsWith('http') || isAggregatorOrNoiseHost(url)) continue;
+        try {
+          const host = new URL(url).hostname.replace(/^www\./, '');
+          if (seenHosts.has(host)) continue;
+          seenHosts.add(host);
+          targets.push({ url, title: stripHtml(m[2]) });
+          if (targets.length >= 6) break;
+        } catch {
+          // ignore
+        }
+      }
+
+      const settled = await Promise.allSettled(
+        targets.map(async (t, idx) => {
+          const page = await fetchHtmlQuick(t.url, 4000);
+          if (!page) return null;
+          const cleanText = stripHtml(page.html);
+          let email = extractEmailFromText(page.html) || extractEmailFromText(cleanText);
+          if (!email) {
+            try {
+              const origin = new URL(page.finalUrl).origin;
+              const contactPage = await fetchHtmlQuick(`${origin}/contact`, 3000);
+              if (contactPage) {
+                email =
+                  extractEmailFromText(contactPage.html) ||
+                  extractEmailFromText(stripHtml(contactPage.html));
+              }
+            } catch {
+              // ignore
+            }
+          }
+          if (!isValidCompanyEmail(email)) return null;
+
+          const companyName =
+            t.title.split(/[|\-–—:]/)[0]?.trim() ||
+            new URL(page.finalUrl).hostname.replace(/^www\./, '');
+          return {
+            id: `direct-${idx}-${Date.now()}`,
+            source: 'company_direct' as const,
+            title: `${query.role} — Direct Application`,
+            company: companyName.slice(0, 70),
+            location: query.targetCountry || 'Direct Employer',
+            url: page.finalUrl,
+            applyUrl: page.finalUrl,
+            description: cleanText.slice(0, 450),
+            contactEmail: email,
+            tags: [query.role],
+          };
+        }),
+      );
+
+      const items = settled
+        .filter(
+          (r): r is PromiseFulfilledResult<NonNullable<any>> =>
+            r.status === 'fulfilled' && Boolean(r.value),
+        )
+        .map((r) => r.value);
+
+      return { source: 'company_direct', items };
+    } catch {
+      return { source: 'company_direct', items: [] };
     }
   }
 
@@ -416,7 +705,7 @@ export class JobSearchApiService {
           url: applyUrl,
           applyUrl,
           description: desc.slice(0, 500),
-          contactEmail: extractEmailFromText(desc) || guessCompanyEmail(company, applyUrl),
+          contactEmail: extractEmailFromText(desc),
           tags: [],
         };
       });

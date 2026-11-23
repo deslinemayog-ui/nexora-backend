@@ -348,10 +348,15 @@ export class AutonomousWorkerService {
     );
 
     if (params.agentType === AgentType.JOB_AGENT) {
-      const joined = allTexts.join(' ');
+      const joined = allTexts.join('\n');
+      const formRoleMatch =
+        joined.match(/applying for a job\s*\(\s*([^)]+?)\s+in\s+[^)]+\)/i) ||
+        joined.match(/(?:^|\n)\s*(?:Target\s+(?:Job\s+)?Role|Profession|Job\s+Title)\s*:\s*([^\n|]+)/i) ||
+        joined.match(/(?:looking for|interested in|into|work as a|i am a)\s+([a-zA-Z][a-zA-Z\s/&-]{2,40})/i);
       const roleMatch = joined.match(
-        /\b(?:senior\s+software\s+developer|senior\s+software\s+engineer|software\s+developer|software\s+engineer|react\s+developer|full[- ]stack\s+developer|mobile\s+developer)\b/i,
+        /\b(?:senior\s+software\s+developer|senior\s+software\s+engineer|software\s+developer|software\s+engineer|react\s+developer|full[- ]stack\s+developer|mobile\s+developer|cleaner|cleaning|construction|accountant|nurse|driver|electrician|plumber|security|admin|sales|marketing)\b/i,
       );
+      const extractedRole = (formRoleMatch?.[1] || roleMatch?.[0] || 'Software Developer').trim();
       const skills = ['React', 'JavaScript', 'TypeScript', 'React Native', 'AWS', 'Node.js', 'Python', 'Java'].filter(
         (s) => joined.toLowerCase().includes(s.toLowerCase()),
       );
@@ -359,21 +364,23 @@ export class AutonomousWorkerService {
       let apiTargets: DiscoveredPlatformTarget[] = [];
       if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
         const apiRes = await jobSearchApiService.searchJobs({
-          role: roleMatch?.[0] || 'Software Developer',
-          skills: skills.length > 0 ? skills : ['React', 'JavaScript', 'AWS'],
+          role: extractedRole,
+          skills: skills.length > 0 ? skills : undefined,
           targetCountry: params.targetCountry,
           limit: 10,
         });
-        apiTargets = apiRes.jobs.map((j) => ({
-          name: `${j.title} — ${j.company}`.slice(0, 90),
-          category: `${j.source.toUpperCase()} (${j.location})`,
-          portalUrl: j.url,
-          applicationUrl: j.applyUrl,
-          contactEmail: j.contactEmail || `careers@${j.company.toLowerCase().replace(/[^a-z0-9]/g, '') || 'company'}.com`,
-          focusSummary: j.description.slice(0, 200) || `${j.title} at ${j.company}`,
-          checkSizeOrBenefit: j.salary || 'Direct Application + Email',
-          liveReachable: true,
-        }));
+        apiTargets = apiRes.jobs
+          .filter((j) => Boolean(j.contactEmail) || j.source !== 'adzuna')
+          .map((j) => ({
+            name: `${j.title} — ${j.company}`.slice(0, 90),
+            category: `${j.source.toUpperCase()} (${j.location})`,
+            portalUrl: j.url,
+            applicationUrl: j.applyUrl,
+            contactEmail: j.contactEmail,
+            focusSummary: j.description.slice(0, 200) || `${j.title} at ${j.company}`,
+            checkSizeOrBenefit: j.salary || 'Direct Application + Email',
+            liveReachable: true,
+          }));
       }
 
       if (apiTargets.length > 0) {
