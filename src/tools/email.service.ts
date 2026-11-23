@@ -91,6 +91,128 @@ export interface BehalfEmailPayload {
  * For safe testing, routes delivery to TEST_RECIPIENT_EMAIL (`info@empiredigitals.org`)
  * while preserving the intended recipient metadata in the email header and body.
  */
+/**
+ * Builds the application/outreach email HTML from a payload.
+ * Edit this function to redesign the email layout and styling.
+ */
+export const buildApplicationEmailHtml = (
+  payload: BehalfEmailPayload,
+  _targetRecipient = process.env.TEST_RECIPIENT_EMAIL || 'info@empiredigitals.org',
+): string => {
+  const finalSubject = payload.subject;
+
+  const formatFieldLabel = (key: string): string =>
+    key
+      .replace(/_/g, ' ')
+      .replace(/\b\w/g, (c) => c.toUpperCase());
+
+  const hiddenKeys = new Set(['sent_on_behalf_of', 'submission_mode']);
+  const fieldsRowsHtml = Object.entries(payload.submittedFields)
+    .filter(([key]) => !hiddenKeys.has(key.toLowerCase()))
+    .map(
+      ([key, val]) => `
+        <tr>
+          <td style="padding: 9px 14px; border-bottom: 1px solid #e2e8f0; font-weight: 600; color: #475569; width: 34%; font-size: 13px;">${escapeHtml(formatFieldLabel(key))}</td>
+          <td style="padding: 9px 14px; border-bottom: 1px solid #e2e8f0; color: #0f172a; font-size: 13px;">${escapeHtml(val)}</td>
+        </tr>`,
+    )
+    .join('');
+
+  const bodyHtmlParagraphs = payload.plainTextBody
+    .split('\n\n')
+    .map(
+      (para) =>
+        `<p style="margin: 0 0 14px 0; line-height: 1.65; color: #1e293b; font-size: 14.5px;">${escapeHtml(para).replace(/\n/g, '<br/>')}</p>`,
+    )
+    .join('');
+
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${escapeHtml(finalSubject)}</title>
+</head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f8fafc; margin: 0; padding: 28px 16px; color: #0f172a;">
+  <div style="max-width: 640px; margin: 0 auto; background-color: #ffffff; border-radius: 14px; overflow: hidden; box-shadow: 0 4px 20px rgba(15, 23, 42, 0.06); border: 1px solid #e2e8f0;">
+    
+    <div style="background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); color: #ffffff; padding: 24px 28px;">
+      <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 1.2px; color: #38bdf8; font-weight: 700; margin-bottom: 8px;">
+        Application Submission • Ref ${escapeHtml(payload.referenceId)}
+      </div>
+      <h1 style="margin: 0; font-size: 21px; font-weight: 700; line-height: 1.3; color: #ffffff;">
+        ${escapeHtml(payload.platformName)}
+      </h1>
+      <p style="margin: 6px 0 0 0; font-size: 13.5px; color: #cbd5e1;">
+        Applicant: <strong style="color: #ffffff;">${escapeHtml(payload.applicantName)}</strong>
+      </p>
+    </div>
+
+    <div style="padding: 28px;">
+      ${bodyHtmlParagraphs}
+
+      ${
+        fieldsRowsHtml
+          ? `
+      <div style="margin-top: 26px; border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden; background-color: #f8fafc;">
+        <div style="padding: 10px 14px; background-color: #f1f5f9; border-bottom: 1px solid #e2e8f0; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: #334155;">
+          Applicant Details
+        </div>
+        <table style="width: 100%; border-collapse: collapse; background-color: #ffffff;">
+          <tbody>
+            ${fieldsRowsHtml}
+          </tbody>
+        </table>
+      </div>`
+          : ''
+      }
+    </div>
+
+    <div style="background-color: #f8fafc; border-top: 1px solid #e2e8f0; padding: 14px 28px; font-size: 12px; color: #64748b; text-align: center;">
+      Prepared and submitted via <strong>Nexora AI</strong> on behalf of ${escapeHtml(payload.applicantName)}.
+    </div>
+  </div>
+</body>
+</html>
+  `.trim();
+};
+
+/**
+ * Generates an email HTML preview with realistic dummy data (never sends an email).
+ */
+export const previewApplicationEmailHtml = (
+  overrides?: Partial<BehalfEmailPayload>,
+): string => {
+  const dummyPayload: BehalfEmailPayload = {
+    applicantName: 'Lameck Ndhlovu',
+    intendedRecipientEmail: 'careers@stripe.com',
+    platformName: 'Senior Software Developer — MASS Consultants',
+    platformCategory: 'Software Engineering',
+    applicationUrl: 'https://www.linkedin.com/in/lameck-ndhlovu-4b975489',
+    referenceId: 'SUB-50039993',
+    subject: 'Job Application: Senior Software Developer — MASS Consultants — Lameck Ndhlovu',
+    plainTextBody: [
+      'Dear Hiring Team at MASS Consultants,',
+      'Please find attached the Curriculum Vitae (CV) for Lameck Ndhlovu in application for the Senior Software Developer position.',
+      'Lameck brings 8+ years of experience delivering production React, TypeScript, Node.js, React Native, and AWS systems across fintech and enterprise telecom platforms.',
+      'Please let us know if you would like to schedule an interview or require any additional details.',
+      'Best regards,\nLameck Ndhlovu',
+    ].join('\n\n'),
+    submittedFields: {
+      'Applicant Name': 'Lameck Ndhlovu',
+      'Email': 'mickylyricalkartel@gmail.com',
+      'Phone': '+27 65 801 6132',
+      'Target Role': 'Senior Software Developer',
+      'Portfolio / LinkedIn': 'https://www.linkedin.com/in/lameck-ndhlovu-4b975489',
+      'Attached CV': 'Lameck_Ndhlovu_CV.pdf',
+    },
+    ...overrides,
+  };
+
+  return buildApplicationEmailHtml(dummyPayload);
+};
+
 export const sendApplicationEmailOnBehalfOfUser = async (
   payload: BehalfEmailPayload,
 ): Promise<{
@@ -102,78 +224,8 @@ export const sendApplicationEmailOnBehalfOfUser = async (
 }> => {
   // Always route to info@empiredigitals.org in test mode so real external VCs/employers are not spammed during testing
   const targetRecipient = process.env.TEST_RECIPIENT_EMAIL || 'info@empiredigitals.org';
-
-  const finalSubject = `[On behalf of ${payload.applicantName}] ${payload.subject}`;
-
-  const fieldsRowsHtml = Object.entries(payload.submittedFields)
-    .map(
-      ([key, val]) => `
-        <tr>
-          <td style="padding: 8px 12px; border: 1px solid #e2e8f0; font-weight: 600; background-color: #f8fafc; color: #334155; width: 32%;">${escapeHtml(key)}</td>
-          <td style="padding: 8px 12px; border: 1px solid #e2e8f0; color: #0f172a;">${escapeHtml(val)}</td>
-        </tr>`,
-    )
-    .join('');
-
-  const bodyHtmlParagraphs = payload.plainTextBody
-    .split('\n\n')
-    .map(
-      (para) =>
-        `<p style="margin: 0 0 14px 0; line-height: 1.6; color: #1e293b;">${escapeHtml(para).replace(/\n/g, '<br/>')}</p>`,
-    )
-    .join('');
-
-  const html = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>${escapeHtml(finalSubject)}</title>
-</head>
-<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f1f5f9; margin: 0; padding: 24px;">
-  <div style="max-width: 680px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08); border: 1px solid #e2e8f0;">
-    
-    <div style="background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 100%); color: #ffffff; padding: 20px 24px;">
-      <div style="font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: #93c5fd; font-weight: 700; margin-bottom: 6px;">
-        Nexora AI Autonomous Workforce • Official Outreach Dispatch
-      </div>
-      <h2 style="margin: 0; font-size: 20px; font-weight: 700;">
-        Sent on behalf of ${escapeHtml(payload.applicantName)}
-      </h2>
-      <p style="margin: 6px 0 0 0; font-size: 13px; color: #cbd5e1;">
-        Target Platform: <strong>${escapeHtml(payload.platformName)}</strong> (${escapeHtml(payload.platformCategory)}) • Ref: <code>${escapeHtml(payload.referenceId)}</code>
-      </p>
-    </div>
-
-    <div style="background-color: #eff6ff; border-bottom: 1px solid #bfdbfe; padding: 12px 24px; font-size: 13px; color: #1e40af;">
-      <strong>Delivery Routing Notice:</strong> This application was prepared and dispatched by <strong>Nexora AI on behalf of ${escapeHtml(payload.applicantName)}</strong>.<br/>
-      • <strong>Intended Platform Recipient:</strong> ${escapeHtml(payload.intendedRecipientEmail)} (<a href="${escapeHtml(payload.applicationUrl)}" style="color: #2563eb;">${escapeHtml(payload.applicationUrl)}</a>)<br/>
-      • <strong>Delivered To (Test Inbox):</strong> ${escapeHtml(targetRecipient)}
-    </div>
-
-    <div style="padding: 24px;">
-      <h3 style="margin: 0 0 14px 0; font-size: 16px; color: #0f172a; border-bottom: 1px solid #e2e8f0; padding-bottom: 8px;">
-        Outreach / Application Letter (On behalf of ${escapeHtml(payload.applicantName)})
-      </h3>
-      ${bodyHtmlParagraphs}
-
-      <h3 style="margin: 24px 0 12px 0; font-size: 16px; color: #0f172a; border-bottom: 1px solid #e2e8f0; padding-bottom: 8px;">
-        Submitted Application Payload
-      </h3>
-      <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
-        <tbody>
-          ${fieldsRowsHtml}
-        </tbody>
-      </table>
-    </div>
-
-    <div style="background-color: #f8fafc; border-top: 1px solid #e2e8f0; padding: 14px 24px; font-size: 12px; color: #64748b; text-align: center;">
-      Dispatched autonomously by <strong>Nexora AI Workforce Platform</strong> on behalf of <strong>${escapeHtml(payload.applicantName)}</strong> via <code>mrdocs@empiredigitals.org</code>.
-    </div>
-  </div>
-</body>
-</html>
-  `.trim();
+  const finalSubject = payload.subject;
+  const html = buildApplicationEmailHtml(payload, targetRecipient);
 
   const res = await sendMail({
     to: targetRecipient,

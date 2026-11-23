@@ -838,9 +838,10 @@ export class AutonomousWorkerService {
         effectiveApplicantName.trim(),
       );
 
+    const isLinkedInOrSocialTitle = /linkedin|github|twitter|x\.com/i.test(startupOrProjectName);
     const applicantUserLabel = isGenericCustomerName
       ? startupOrProjectName
-      : primarySite
+      : params.agentType === AgentType.INVESTOR_AGENT && primarySite && !isLinkedInOrSocialTitle
         ? `${effectiveApplicantName} (${startupOrProjectName})`
         : effectiveApplicantName;
 
@@ -882,12 +883,12 @@ export class AutonomousWorkerService {
 
       const emailSubject =
         params.agentType === AgentType.INVESTOR_AGENT
-          ? `Investment Application: ${startupOrProjectName}`
+          ? `Investment Introduction: ${startupOrProjectName} — ${effectiveApplicantName}`
           : params.agentType === AgentType.JOB_AGENT
-            ? `Job Application: ${params.customerName || applicantUserLabel} — ${target.name}`
+            ? `Job Application: ${target.name} — ${effectiveApplicantName}`
             : params.agentType === AgentType.EDUCATION_AGENT
-              ? `Scholarship Application: ${applicantUserLabel} — ${target.name}`
-              : `Application Submission: ${applicantUserLabel} — ${target.name}`;
+              ? `Scholarship Application: ${target.name} — ${effectiveApplicantName}`
+              : `Application: ${target.name} — ${effectiveApplicantName}`;
 
       const emailBody =
         params.agentType === AgentType.INVESTOR_AGENT
@@ -1013,7 +1014,7 @@ export class AutonomousWorkerService {
               ? 'EMAIL_SENT'
               : 'SUBMITTED',
         submittedFields,
-        emailSubject: `[On behalf of ${applicantUserLabel}] ${emailSubject}`,
+        emailSubject,
         emailBody,
         submittedAt: new Date().toISOString(),
       });

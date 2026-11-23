@@ -1139,6 +1139,13 @@ export async function buildApiServer(deps: ApiServerDependencies): Promise<Fasti
     return { ok: true, data: saved };
   });
 
+  app.get('/api/v1/email/preview', async (_request, reply) => {
+    const { previewApplicationEmailHtml } = await import('../tools/email.service');
+    const html = previewApplicationEmailHtml();
+    reply.header('Content-Type', 'text/html; charset=utf-8');
+    return reply.send(html);
+  });
+
   app.get('/api/v1/documents/download/:fileName', async (request, reply) => {
     const params = z.object({ fileName: z.string() }).parse(request.params);
     const safeName = path.basename(params.fileName);
