@@ -592,11 +592,14 @@ body {
 
 .turn-content {
   flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
   font-size: 14px;
   line-height: 1.65;
   color: var(--text-main);
   white-space: pre-line;
-  word-break: break-word;
+  overflow-wrap: anywhere;
+  box-sizing: border-box;
 }
 .chat-turn-container.user .turn-content {
   max-width: 74%;
@@ -1377,6 +1380,43 @@ body {
   color: #cffafe;
 }
 
+.pdf-review-card {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(37, 99, 235, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.pdf-review-card-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1 1 200px;
+}
+.pdf-review-card-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: #f8fafc;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pdf-review-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 @media (max-width: 640px) {
   .gpt-header {
     padding: 8px 10px;
@@ -1438,15 +1478,44 @@ body {
     flex-wrap: wrap;
   }
   .chat-scroll-stream {
-    padding: 16px 12px 140px 12px;
+    padding: 12px 6px 130px 6px;
   }
   .chat-turn-container {
-    gap: 8px;
-    padding: 0 10px;
+    gap: 6px;
+    padding: 0 4px;
   }
-  .chat-turn-container.user .turn-content,
+  .turn-avatar {
+    width: 24px;
+    height: 24px;
+    font-size: 10px;
+  }
+  .chat-turn-container.user .turn-content {
+    max-width: calc(100% - 34px);
+    padding: 9px 13px;
+    font-size: 13.5px;
+  }
   .chat-turn-container.assistant .turn-content {
-    max-width: 86%;
+    max-width: calc(100% - 34px);
+    padding: 10px 12px;
+    font-size: 13.5px;
+  }
+  .pdf-review-card {
+    padding: 10px 12px;
+    gap: 10px;
+  }
+  .pdf-review-card-info {
+    flex: 1 1 100%;
+  }
+  .pdf-review-card-actions {
+    width: 100%;
+  }
+  .pdf-review-card-actions .chat-action-btn.primary {
+    flex: 1;
+    justify-content: center;
+  }
+  .chat-actions-container {
+    flex-wrap: wrap;
+    gap: 6px;
   }
   .floating-input-container {
     padding: 8px 10px 12px 10px;

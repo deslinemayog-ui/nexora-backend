@@ -2497,31 +2497,19 @@ export const App: React.FC = () => {
 
                   {/* Generated PDF Review Card (e.g. Compiled CV PDF) */}
                   {msg.generatedPdf && (
-                    <div
-                      style={{
-                        marginTop: '12px',
-                        padding: '12px 14px',
-                        borderRadius: '12px',
-                        background: 'rgba(37, 99, 235, 0.1)',
-                        border: '1px solid rgba(59, 130, 246, 0.35)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        gap: '12px',
-                      }}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                        <FileText className="w-5 h-5 text-cyan-400" />
-                        <div>
-                          <div style={{ fontSize: '13px', fontWeight: 700, color: '#f8fafc' }}>
+                    <div className="pdf-review-card">
+                      <div className="pdf-review-card-info">
+                        <FileText className="w-5 h-5 text-cyan-400 shrink-0" />
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div className="pdf-review-card-name" title={msg.generatedPdf.fileName}>
                             {msg.generatedPdf.fileName}
                           </div>
                           <div style={{ fontSize: '11px', color: '#94a3b8' }}>
-                            PDF Document • {(msg.generatedPdf.fileSizeBytes / 1024).toFixed(1)} KB • Ready to review before submission
+                            PDF • {(msg.generatedPdf.fileSizeBytes / 1024).toFixed(1)} KB • Ready to review
                           </div>
                         </div>
                       </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                      <div className="pdf-review-card-actions">
                         <button
                           type="button"
                           onClick={() => {
