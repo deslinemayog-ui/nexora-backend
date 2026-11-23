@@ -129,7 +129,7 @@ export const LegalPage: React.FC<LegalPageProps> = ({ mode, onNavigate }) => {
                 <ul style={{ paddingLeft: '20px', margin: 0 }}>
                   <li>
                     <strong>Account Information:</strong> Name, email address, and authentication identifiers provided
-                    when you sign in via Google or Email/Password (Firebase Authentication).
+                    when you sign in via Google or Email/Password.
                   </li>
                   <li>
                     <strong>Profile &amp; Prerequisites Data:</strong> Career history, skills, education, nationality,
@@ -164,10 +164,9 @@ export const LegalPage: React.FC<LegalPageProps> = ({ mode, onNavigate }) => {
                   4. Third-Party Service Providers
                 </h2>
                 <p>
-                  To deliver these capabilities, Nexora AI integrates with trusted infrastructure providers including
-                  Google Firebase (authentication &amp; cloud storage), Paystack (payment processing), AI inference
-                  providers, and email transport servers (SMTP/IMAP). Each provider processes data solely to execute
-                  your requested actions.
+                  To deliver these capabilities, Nexora AI integrates with trusted infrastructure partners for
+                  authentication, encrypted cloud storage, payment processing (Paystack), AI inference, and email
+                  delivery. Each provider processes data solely to execute your requested actions.
                 </p>
               </section>
 

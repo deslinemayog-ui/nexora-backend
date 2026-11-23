@@ -513,11 +513,11 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
           >
             {[
               { icon: Bot, label: '1. Semantic Router', sub: 'Multi-language + Deep Think', color: '#38bdf8' },
-              { icon: Cpu, label: '2. PDF Synthesis', sub: 'Headless Chrome ATS PDF', color: '#818cf8' },
+              { icon: Cpu, label: '2. PDF Synthesis', sub: 'Executive ATS-Ready PDF', color: '#818cf8' },
               { icon: Lock, label: '3. Approval Gate', sub: 'Side-by-side Review & Edit', color: '#fbbf24' },
-              { icon: Globe2, label: '4. Live Discovery', sub: 'Adzuna, Remotive & Portals', color: '#c084fc' },
-              { icon: Mail, label: '5. Auto Dispatch', sub: 'SMTP Email + Form Filler', color: '#34d399' },
-              { icon: RefreshCw, label: '6. Reply Monitor', sub: 'IMAP Threads & Interviews', color: '#60a5fa' },
+              { icon: Globe2, label: '4. Live Discovery', sub: 'Matched Roles & Portals', color: '#c084fc' },
+              { icon: Mail, label: '5. Auto Dispatch', sub: 'Direct Email & Portal Apply', color: '#34d399' },
+              { icon: RefreshCw, label: '6. Reply Monitor', sub: 'Threaded Inbox & Interviews', color: '#60a5fa' },
             ].map((node, i) => {
               const Icon = node.icon;
               return (
@@ -558,14 +558,14 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
         </div>
       </section>
 
-      {/* Architecture & Infrastructure Section */}
+      {/* Platform Capabilities Section */}
       <section style={{ maxWidth: '1040px', margin: '0 auto', padding: '32px 20px 56px 20px' }}>
         <div style={{ textAlign: 'center', marginBottom: '28px' }}>
           <h2 style={{ fontSize: '26px', fontWeight: 800, color: '#ffffff', marginBottom: '8px' }}>
-            Production Architecture
+            Built for Speed, Privacy &amp; Precision
           </h2>
           <p style={{ color: '#94a3b8', fontSize: '14px', maxWidth: '620px', margin: '0 auto' }}>
-            Engineered by Empire Labs with separated edge UI, encrypted APIs, and persistent multi-tenant storage.
+            Engineered by Empire Labs with isolated customer workspaces, encrypted transport, and reliable automation.
           </p>
         </div>
 
@@ -573,23 +573,23 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
           {[
             {
               icon: Globe2,
-              title: 'Edge Web App (Netlify)',
-              detail: 'Responsive React + Vite SPA at / and /app with Firebase Auth and live PDF preview.',
+              title: 'Unified Web Workspace',
+              detail: 'Fast, responsive experience at / and /app with instant document previews and mobile support.',
             },
             {
               icon: Cpu,
-              title: 'AI Orchestrator (GCP + Caddy)',
-              detail: 'HTTPS Fastify API + OpenClaw + NVIDIA NIM reasoning & Playwright Chromium automation.',
+              title: 'Intelligent AI Reasoning',
+              detail: 'Multi-language understanding, deep reasoning mode, and automated portal & document preparation.',
             },
             {
               icon: Database,
-              title: 'Persistent Data & Credits',
-              detail: 'Firestore user profiles & task history paired with server-side wallet & submission receipts.',
+              title: 'Persistent Task History',
+              detail: 'Your profile, form details, generated PDFs, and submission receipts stay organized in one place.',
             },
             {
               icon: CreditCard,
-              title: 'Paystack & Email Pipeline',
-              detail: 'Verified Paystack top-ups ($5 free starter credit) + Zoho SMTP & Gmail IMAP reply sync.',
+              title: 'Verified Credits & Inbox Sync',
+              detail: 'Pay-as-you-go submission credits ($5 free starter credit) with live reply & interview tracking.',
             },
           ].map((box, idx) => {
             const Icon = box.icon;
