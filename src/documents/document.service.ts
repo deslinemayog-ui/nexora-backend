@@ -7,7 +7,7 @@ import {
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
-import { Document, DocumentType, ScanStatus } from '@prisma/client';
+import { Document, DocumentType, ScanStatus } from '../database/types';
 import pdfParse from 'pdf-parse';
 import { env } from '../config/env';
 import { NexoraRepository } from '../database/repository';

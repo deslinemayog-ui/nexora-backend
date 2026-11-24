@@ -6,7 +6,6 @@ import { env } from './config/env';
 import { ConversationService } from './core/conversation/conversation.service';
 import { CustomerService } from './core/customer/customer.service';
 import { OrchestratorService } from './core/orchestrator/orchestrator.service';
-import { prismaService } from './database/prisma.service';
 import { NexoraRepository } from './database/repository';
 import { DocumentService } from './documents/document.service';
 import { MemoryService } from './memory/memory.service';
@@ -29,8 +28,7 @@ export async function createNexoraApplication(options: CreateNexoraApplicationOp
   const useInMemory = options.useInMemoryStores ?? env.NODE_ENV === 'test';
 
   const repository = new NexoraRepository({
-    prisma: useInMemory ? undefined : prismaService,
-    useInMemory,
+    useInMemory: true,
   });
 
   const whatsappService = new WhatsAppService(options.whatsappProvider);
@@ -97,18 +95,6 @@ export async function createNexoraApplication(options: CreateNexoraApplicationOp
     orchestratorService,
     async start() {
       if (!useInMemory) {
-        try {
-          await prismaService.connect();
-        } catch (dbErr) {
-          if (env.NODE_ENV === 'production') {
-            throw dbErr;
-          }
-          logger.warn(
-            'PostgreSQL is not running locally on port 5432; falling back to embedded in-memory multi-tenant store for local development.',
-          );
-          repository.setInMemoryMode(true);
-        }
-
         const redisAvailable = await redisManager.healthCheck();
         if (redisAvailable) {
           queueService.startBullWorkers();
@@ -143,9 +129,6 @@ export async function createNexoraApplication(options: CreateNexoraApplicationOp
       await queueService.close();
       await redisManager.close();
       await apiServer.close();
-      if (!useInMemory) {
-        await prismaService.disconnect();
-      }
       logger.info('Nexora AI shutdown complete.');
     },
   };

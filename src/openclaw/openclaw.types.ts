@@ -1,4 +1,4 @@
-import { AgentType } from '@prisma/client';
+import { AgentType } from '../database/types';
 
 /**
  * OpenClaw Gateway WebSocket Protocol Frame Schemas

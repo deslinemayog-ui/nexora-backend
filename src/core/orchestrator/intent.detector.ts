@@ -1,4 +1,4 @@
-import { AgentType } from '@prisma/client';
+import { AgentType } from '../../database/types';
 import { env } from '../../config/env';
 import { buildTenantSessionKey } from '../../openclaw/openclaw.sessions';
 import type { OpenClawService } from '../../openclaw/openclaw.service';

@@ -1,4 +1,4 @@
-import { ActionCategory } from '@prisma/client';
+import { ActionCategory } from '../../database/types';
 
 export type AutomaticallyPermittedAction =
   | 'RESEARCH'

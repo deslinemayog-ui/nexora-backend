@@ -1,4 +1,4 @@
-import { AgentType, DocumentType } from '@prisma/client';
+import { AgentType, DocumentType } from '../database/types';
 
 export type QueueName =
   | 'nexora-agent-execution'

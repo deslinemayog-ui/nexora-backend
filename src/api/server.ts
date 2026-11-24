@@ -6,7 +6,7 @@ import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
-import { ActionCategory, AgentType, Priority, TaskStatus } from '@prisma/client';
+import { ActionCategory, AgentType, Priority, TaskStatus } from '../database/types';
 import { z } from 'zod';
 import { agentRegistry } from '../agents/agent.registry';
 import { ApprovalService } from '../approvals/approval.service';
@@ -29,6 +29,7 @@ import { imapMonitorService } from '../tools/imap-monitor.service';
 import { jobSearchApiService } from '../tools/job-search-api.service';
 import { visaRelocationService } from '../tools/visa-relocation.service';
 import { paystackService } from '../tools/paystack.service';
+import { downloadFromFirebaseStorage } from '../tools/firebase-storage.service';
 import { registerPlatformRoutes } from './platform.routes';
 
 export interface ApiServerDependencies {
@@ -1199,14 +1200,28 @@ export async function buildApiServer(deps: ApiServerDependencies): Promise<Fasti
       safeName,
     );
     const fallbackPath = path.resolve(process.cwd(), 'storage', 'documents', safeName);
-    const buffer = await fs
+    let buffer: Buffer | null = await fs
       .readFile(primaryPath)
       .catch(() => fs.readFile(fallbackPath))
       .catch(() => null);
+    let contentType = safeName.toLowerCase().endsWith('.png')
+      ? 'image/png'
+      : /\.(jpe?g)$/i.test(safeName)
+        ? 'image/jpeg'
+        : safeName.toLowerCase().endsWith('.webp')
+          ? 'image/webp'
+          : 'application/pdf';
+    if (!buffer) {
+      const remote = await downloadFromFirebaseStorage(`documents/${safeName}`);
+      if (remote) {
+        buffer = remote.buffer;
+        if (remote.contentType) contentType = remote.contentType;
+      }
+    }
     if (!buffer) {
       return reply.status(404).send({ ok: false, error: 'Document not found' });
     }
-    reply.header('Content-Type', 'application/pdf');
+    reply.header('Content-Type', contentType);
     reply.header('Content-Disposition', `inline; filename="${safeName}"`);
     reply.header('Cross-Origin-Resource-Policy', 'cross-origin');
     reply.header('Content-Security-Policy', 'frame-ancestors *');

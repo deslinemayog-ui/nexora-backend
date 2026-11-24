@@ -271,7 +271,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
             <CalendarDays className="w-4 h-4 text-indigo-400" /> Google Calendar &amp; .ics Invites
           </span>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-            <ShieldCheck className="w-4 h-4 text-emerald-400" /> 10% Success-Only Paystack Billing
+            <ShieldCheck className="w-4 h-4 text-emerald-400" /> 90/10 CTC Split — Zero Extra Company Markup
           </span>
         </div>
       </section>
@@ -363,11 +363,11 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
               Side 2 • For Companies, Agencies &amp; Opportunity Providers
             </div>
             <h2 style={{ fontSize: '28px', fontWeight: 800, color: '#ffffff', marginBottom: '10px' }}>
-              Hire Faster with AI CV Scoring, Verified Transcripts &amp; 10% Success Billing
+              Nexora Handles Recruiting. You Handle Final Hiring &amp; Staffing.
             </h2>
-            <p style={{ color: '#cbd5e1', fontSize: '14.5px', maxWidth: '720px', margin: '0 auto' }}>
-              Built for Hiring Companies, Recruitment &amp; Staffing Agencies, Relocation &amp; Immigration Firms,
-              Scholarship Providers, Educational Institutions, and Investment Funds.
+            <p style={{ color: '#cbd5e1', fontSize: '14.5px', maxWidth: '760px', margin: '0 auto' }}>
+              Set your Max Monthly Budget (CTC) on any role—zero extra markup above your budget. Nexora finds,
+              tests, and AI-scores the best candidates, and takes 10% from the stated CTC (90% goes to your hire).
             </p>
           </div>
 
@@ -401,8 +401,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
               {
                 icon: CreditCard,
                 color: '#fbbf24',
-                title: '10% Monthly Paystack Invoicing',
-                desc: 'Set a Monthly USD Offer on each opportunity. When you accept/hire a candidate, Nexora generates a PDF invoice for 10%/month payable online via Paystack.',
+                title: 'Zero Markup: 90/10 CTC Split',
+                desc: 'Enter your Max Monthly Budget (CTC). For an accepted hire (e.g. $75k CTC), the candidate gets 90% ($67.5k) and Nexora invoices 10% ($7.5k) via Paystack.',
               },
             ].map((item, idx) => {
               const Icon = item.icon;
@@ -722,8 +722,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
               a: 'In the Assignments tab, complete your category prerequisites and take a timed 15-question AI assessment tailored to your Target Job Role and CV. Upon submission, Nexora generates a permanent PDF transcript you can attach to applications.',
             },
             {
-              q: 'How does the 10% monthly company fee work?',
-              a: 'Posting vacancies and receiving AI-scored applications is free. When a company accepts/hires a candidate on an opportunity with a Monthly USD Offer, Nexora automatically generates a 10% monthly PDF invoice payable via Paystack.',
+              q: 'How does the 10% recruiting fee work (zero extra cost to companies)?',
+              a: 'Your stated Max Monthly Budget (CTC) is the maximum total you ever pay. For example, on a $75,000 CTC role, the employee receives $67,500 (90%) and Nexora invoices $7,500 (10%) via Paystack—only after you accept/hire the candidate.',
             },
             {
               q: 'Can companies require an Assessment Transcript before accepting applications?',

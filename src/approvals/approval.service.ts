@@ -3,7 +3,7 @@ import {
   Approval,
   ApprovalStatus,
   TaskStatus,
-} from '@prisma/client';
+} from '../database/types';
 import { NexoraRepository } from '../database/repository';
 import { ValidationError } from '../utils/errors';
 

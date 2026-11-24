@@ -1,7 +1,7 @@
 import fs from 'fs/promises';
 import pdfParse from 'pdf-parse';
 import { describe, expect, it } from 'vitest';
-import { AgentType } from '@prisma/client';
+import { AgentType } from '../src/database/types';
 import { documentGeneratorService } from '../src/tools/document-generator.service';
 import {
   classifyInterviewEmail,

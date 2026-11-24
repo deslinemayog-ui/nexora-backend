@@ -3,7 +3,7 @@ import path from 'path';
 import { chromium, type Browser } from 'playwright-core';
 import { logger } from '../utils/logger';
 import { NEXORA_LOGO_BASE64, NEXORA_ICON_BASE64 } from '../assets/logo';
-import { AgentType } from '@prisma/client';
+import { AgentType } from '../database/types';
 import { sendMail } from './email.service';
 
 export interface DocumentSection {
@@ -1218,18 +1218,18 @@ export class DocumentGeneratorService {
     </div>
   </div>
   <table style="width:100%;border-collapse:collapse;font-size:12px;border:1px solid #e2e8f0;margin-bottom:20px;">
-    <thead><tr style="background:#f1f5f9;"><th style="padding:10px;text-align:left;">Description</th><th style="padding:10px;text-align:right;">Monthly Offer (USD)</th><th style="padding:10px;text-align:right;">Fee Rate</th><th style="padding:10px;text-align:right;">Amount Due (USD)</th></tr></thead>
+    <thead><tr style="background:#f1f5f9;"><th style="padding:10px;text-align:left;">Description</th><th style="padding:10px;text-align:right;">Max Budget / CTC (USD)</th><th style="padding:10px;text-align:right;">Candidate Net (90%)</th><th style="padding:10px;text-align:right;">Nexora Fee (10% of CTC)</th></tr></thead>
     <tbody>
       <tr>
-        <td style="padding:12px;border-top:1px solid #e2e8f0;">Nexora AI Monthly Platform Fee — Accepted Placement (${this.escapeHtml(params.billingMonth)})</td>
+        <td style="padding:12px;border-top:1px solid #e2e8f0;">Nexora AI Recruiting Fee — Accepted Placement (${this.escapeHtml(params.billingMonth)})</td>
         <td style="padding:12px;border-top:1px solid #e2e8f0;text-align:right;">$${params.offerAmountUsd.toFixed(2)}</td>
-        <td style="padding:12px;border-top:1px solid #e2e8f0;text-align:right;">${params.feePercent}%</td>
+        <td style="padding:12px;border-top:1px solid #e2e8f0;text-align:right;">$${(params.offerAmountUsd * 0.9).toFixed(2)}</td>
         <td style="padding:12px;border-top:1px solid #e2e8f0;text-align:right;font-weight:800;">$${params.feeAmountUsd.toFixed(2)}</td>
       </tr>
     </tbody>
   </table>
   <div style="padding:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;font-size:11.5px;color:#475569;">
-    Pay securely online inside your <strong>Nexora Company Dashboard → Billing &amp; Invoices</strong> via Paystack.
+    <strong>Zero extra cost above your budget:</strong> Your total Max Budget (CTC) is split 90% to the candidate ($${(params.offerAmountUsd * 0.9).toFixed(2)}) and 10% to Nexora AI ($${params.feeAmountUsd.toFixed(2)}). Pay Nexora's 10% share online in <strong>Nexora Company Dashboard → Billing &amp; 10% Fees</strong> via Paystack.
   </div>
 </body></html>`;
     return this.renderHtmlToPdf(html, fileName, `Nexora AI Invoice ${params.invoiceNumber}`);

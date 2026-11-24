@@ -22,6 +22,13 @@ import {
   VacancyRecord,
 } from './platform.store';
 
+function addDaysIso(dateIso: string, days: number): string {
+  const base = dateIso ? new Date(dateIso) : new Date();
+  const d = Number.isNaN(base.getTime()) ? new Date() : base;
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
 export class PlatformService {
   constructor(private readonly openclawService?: OpenClawService) {}
 
@@ -66,15 +73,39 @@ export class PlatformService {
     billingEmail?: string;
     additionalRecipients?: string[];
     verificationDocs?: Array<{ fileName: string; url?: string }>;
-  }): Promise<{ organisation: Omit<OrganisationRecord, 'passwordHash'>; verificationToken: string }> {
+  }): Promise<{ organisation: Omit<OrganisationRecord, 'passwordHash'>; verificationToken: string; requiresEmailVerification: boolean }> {
     const state = platformStore.getState();
     const emailNorm = input.businessEmail.trim().toLowerCase();
     if (state.organisations.some((o) => o.businessEmail === emailNorm)) {
       throw new Error('An organisation with this business email is already registered');
     }
 
+    const rawWebsite = (input.website || '').trim();
+    if (!rawWebsite) {
+      throw new Error('Company website URL is required for registration');
+    }
+    let websiteHost = '';
+    try {
+      const normalizedUrl = /^https?:\/\//i.test(rawWebsite) ? rawWebsite : `https://${rawWebsite}`;
+      websiteHost = new URL(normalizedUrl).hostname.toLowerCase().replace(/^www\./, '');
+    } catch {
+      throw new Error('Please enter a valid company website URL (e.g. https://yourcompany.com)');
+    }
+    const emailDomain = (emailNorm.split('@')[1] || '').toLowerCase();
+    if (
+      !websiteHost ||
+      !emailDomain ||
+      (emailDomain !== websiteHost &&
+        !emailDomain.endsWith(`.${websiteHost}`) &&
+        !websiteHost.endsWith(`.${emailDomain}`))
+    ) {
+      throw new Error(
+        `Work email domain (@${emailDomain}) must match your company website domain (${websiteHost}).`,
+      );
+    }
+
     const now = new Date().toISOString();
-    const verificationToken = crypto.randomBytes(16).toString('hex');
+    const verificationToken = String(crypto.randomInt(100000, 999999));
     const org: OrganisationRecord = {
       id: `org-${crypto.randomUUID().slice(0, 10)}`,
       registeredName: input.registeredName.trim(),
@@ -82,7 +113,7 @@ export class PlatformService {
       registrationNumber: input.registrationNumber?.trim(),
       country: input.country.trim(),
       businessAddress: input.businessAddress.trim(),
-      website: input.website?.trim(),
+      website: /^https?:\/\//i.test(rawWebsite) ? rawWebsite : `https://${rawWebsite}`,
       description: input.description.trim(),
       category: input.category,
       contactFullName: input.contactFullName.trim(),
@@ -106,19 +137,19 @@ export class PlatformService {
     state.organisations.push(org);
     platformStore.save();
 
-    // Send verification email (best effort)
+    // Send 6-digit verification code to businessEmail
     try {
       await sendMail({
         to: org.businessEmail,
-        subject: `Verify your Nexora AI Organisation Account — ${org.registeredName}`,
-        html: `<div style="font-family:Montserrat,Arial,sans-serif;padding:20px;"><h2>Welcome to Nexora AI</h2><p>Hello ${org.contactFullName}, please confirm ownership of your organisation email using verification token: <code>${verificationToken}</code>.</p><h3>What to Expect on Nexora AI</h3><ul><li>Publish vacancies or opportunities with a Monthly USD Offer and optional Assessment Transcript requirement.</li><li>Receive AI-scored CVs (0–100%) and verified candidate assessment transcripts.</li><li>Schedule Online, Telephone, or In-Person interviews with automatic Google Calendar &amp; .ics invites.</li><li>Pay a transparent 10% monthly platform fee via Paystack only for candidates you accept/hire.</li></ul></div>`,
+        subject: `Nexora AI Verification Code: ${verificationToken} — ${org.registeredName}`,
+        html: `<div style="font-family:Montserrat,Arial,sans-serif;padding:24px;max-width:560px;"><h2>Verify Your Nexora AI Company Account</h2><p>Hello ${org.contactFullName},</p><p>Your 6-digit email verification code for <strong>${org.registeredName}</strong> (${websiteHost}) is:</p><div style="font-size:28px;font-weight:800;letter-spacing:6px;padding:14px 20px;background:#0f172a;color:#6ee7b7;border-radius:10px;display:inline-block;margin:12px 0;">${verificationToken}</div><p>Enter this code on the Nexora AI Company Portal to activate your account.</p></div>`,
       });
     } catch {
-      // non-fatal if SMTP not configured locally
+      // non-fatal if SMTP unavailable
     }
 
     const { passwordHash: _pw, ...safeOrg } = org;
-    return { organisation: safeOrg, verificationToken };
+    return { organisation: safeOrg, verificationToken, requiresEmailVerification: true };
   }
 
   public loginOrganisation(email: string, password: string): {
@@ -165,8 +196,12 @@ export class PlatformService {
     const state = platformStore.getState();
     const org = state.organisations.find((o) => o.id === organisationId);
     if (!org) throw new Error('Organisation not found');
-    if (token && org.verificationToken && token !== org.verificationToken) {
-      throw new Error('Invalid email verification token');
+    const cleanToken = (token || '').trim();
+    if (!cleanToken) {
+      throw new Error('Verification code is required');
+    }
+    if (org.verificationToken && cleanToken !== org.verificationToken) {
+      throw new Error('Invalid verification code. Please check the 6-digit code sent to your email.');
     }
     org.emailVerified = true;
     org.status = 'VERIFIED';
@@ -174,6 +209,22 @@ export class PlatformService {
     platformStore.save();
     const { passwordHash: _pw, ...safeOrg } = org;
     return safeOrg;
+  }
+
+  public async resendOrganisationVerificationCode(organisationId: string): Promise<{ sent: boolean; email: string }> {
+    const state = platformStore.getState();
+    const org = state.organisations.find((o) => o.id === organisationId);
+    if (!org) throw new Error('Organisation not found');
+    const code = String(crypto.randomInt(100000, 999999));
+    org.verificationToken = code;
+    org.updatedAt = new Date().toISOString();
+    platformStore.save();
+    await sendMail({
+      to: org.businessEmail,
+      subject: `Nexora AI Verification Code: ${code} — ${org.registeredName}`,
+      html: `<div style="font-family:Montserrat,Arial,sans-serif;padding:24px;max-width:560px;"><h2>Your New Verification Code</h2><p>Hello ${org.contactFullName},</p><p>Your 6-digit verification code for <strong>${org.registeredName}</strong> is:</p><div style="font-size:28px;font-weight:800;letter-spacing:6px;padding:14px 20px;background:#0f172a;color:#6ee7b7;border-radius:10px;display:inline-block;margin:12px 0;">${code}</div></div>`,
+    }).catch(() => undefined);
+    return { sent: true, email: org.businessEmail };
   }
 
   public getOrganisationById(organisationId: string): Omit<OrganisationRecord, 'passwordHash'> | null {
@@ -274,6 +325,20 @@ export class PlatformService {
     return vac;
   }
 
+  public deleteVacancies(organisationId: string, vacancyIds: string[]): number {
+    const state = platformStore.getState();
+    const idSet = new Set(vacancyIds);
+    const before = state.vacancies.length;
+    state.vacancies = state.vacancies.filter(
+      (v) => !(v.organisationId === organisationId && idSet.has(v.id)),
+    );
+    const removed = before - state.vacancies.length;
+    if (removed > 0) {
+      platformStore.save();
+    }
+    return removed;
+  }
+
   public listVacancies(filter?: { organisationId?: string; status?: string; category?: string }): VacancyRecord[] {
     const state = platformStore.getState();
     return state.vacancies.filter((v) => {
@@ -307,15 +372,15 @@ export class PlatformService {
     const org = state.organisations.find((o) => o.id === vac.organisationId);
     if (!org) throw new Error('Organisation not found');
 
-    if (org.requireTranscript && !input.transcriptId) {
-      throw new Error(
-        `${org.tradingName || org.registeredName} requires a verified Nexora Assessment Transcript with every application. Please complete an Assignment first.`,
-      );
-    }
-
     const transcript = input.transcriptId
       ? state.transcripts.find((t) => t.id === input.transcriptId && t.userUid === input.userUid)
       : state.transcripts.find((t) => t.userUid === input.userUid);
+
+    if ((vac.requiresAssessment || org.requireTranscript) && !transcript) {
+      throw new Error(
+        `This vacancy (${vac.title}) requires a verified Nexora Assessment Transcript. Please complete an Assignment first.`,
+      );
+    }
 
     const now = new Date().toISOString();
     const referenceCode = `APP-${Math.floor(100000 + Math.random() * 900000)}`;
@@ -400,8 +465,9 @@ export class PlatformService {
   public listApplicationsForOrganisation(
     organisationId: string,
     filter?: { status?: ApplicationStatusType; search?: string },
-  ): VacancyApplicationRecord[] {
-    let items = platformStore.getState().applications.filter((a) => a.organisationId === organisationId);
+  ) {
+    const state = platformStore.getState();
+    let items = state.applications.filter((a) => a.organisationId === organisationId);
     if (filter?.status) {
       items = items.filter((a) => a.status === filter.status);
     }
@@ -414,7 +480,49 @@ export class PlatformService {
           a.skills.some((s) => s.toLowerCase().includes(q)),
       );
     }
-    return items;
+    return items.map((a) => {
+      const docs = state.supportingDocuments.filter((d) => d.userUid === a.userUid);
+      const trs = state.transcripts.filter((t) => t.userUid === a.userUid);
+      const vac = state.vacancies.find((v) => v.id === a.vacancyId);
+      const reqDocs = vac?.requiredDocuments || [];
+      const docBlob = [
+        a.cvFileName || '',
+        ...docs.map((d) => `${d.docType} ${d.label} ${d.fileName}`),
+        ...trs.map((t) => `transcript ${t.assignmentTitle}`),
+      ]
+        .join(' ')
+        .toLowerCase();
+
+      const documentChecklist = reqDocs.map((reqItem) => {
+        const words = reqItem
+          .toLowerCase()
+          .split(/[^a-z0-9]+/)
+          .filter((w) => w.length > 2 && w !== 'valid' && w !== 'months');
+        const matched =
+          words.some((w) => docBlob.includes(w)) ||
+          (/cv|resume/i.test(reqItem) && Boolean(a.cvFileName || a.cvDownloadUrl)) ||
+          (/transcript|assessment/i.test(reqItem) && (Boolean(a.transcriptId) || trs.length > 0));
+        return { item: reqItem, met: matched };
+      });
+
+      return {
+        ...a,
+        documentChecklist,
+        supportingDocuments: docs.map((d) => ({
+          id: d.id,
+          docType: d.docType,
+          label: d.label,
+          fileName: d.fileName,
+          downloadUrl: d.downloadUrl,
+        })),
+        transcripts: trs.map((t) => ({
+          id: t.id,
+          assignmentTitle: t.assignmentTitle,
+          percentageScore: t.percentageScore,
+          pdfDownloadUrl: t.pdfDownloadUrl,
+        })),
+      };
+    });
   }
 
   public updateApplication(
@@ -427,6 +535,35 @@ export class PlatformService {
     if (!app) throw new Error('Application not found or access denied');
 
     const prevStatus = app.status;
+    if (updates.status === 'HIRED' && prevStatus !== 'HIRED') {
+      const sameCandidate = (c: { customerId?: string; userUid?: string; candidateEmail?: string; candidateName?: string }) =>
+        (app.customerId && c.customerId && c.customerId === app.customerId) ||
+        (app.userUid && c.userUid && c.userUid === app.userUid) ||
+        (app.candidateEmail && c.candidateEmail && c.candidateEmail.toLowerCase() === app.candidateEmail.toLowerCase()) ||
+        c.candidateName?.trim().toLowerCase() === app.candidateName.trim().toLowerCase();
+
+      const existingActivePlc = state.placements.find(
+        (p) =>
+          p.organisationId === organisationId &&
+          p.onboardingStatus !== 'TERMINATED' &&
+          p.onboardingStatus !== 'COMPLETED' &&
+          sameCandidate(p),
+      );
+      const existingHiredApp = state.applications.find(
+        (a) =>
+          a.organisationId === organisationId &&
+          a.id !== app.id &&
+          a.status === 'HIRED' &&
+          sameCandidate(a),
+      );
+      if (existingActivePlc || existingHiredApp) {
+        const existingRole = existingActivePlc?.roleTitle || existingHiredApp?.vacancyTitle || 'another role';
+        throw new Error(
+          `${app.candidateName} is already hired as an active employee (${existingRole}). A candidate cannot hold two active jobs in the same company.`,
+        );
+      }
+    }
+
     if (updates.status) app.status = updates.status;
     if (updates.internalNotes !== undefined) app.internalNotes = updates.internalNotes;
     app.updatedAt = new Date().toISOString();
@@ -449,10 +586,34 @@ export class PlatformService {
         const org = state.organisations.find((o) => o.id === organisationId);
         const offerUsd = Number(vac?.monthlyOfferUsd || 0);
         const existingPlc = state.placements.find(
-          (p) => p.organisationId === organisationId && p.vacancyId === app.vacancyId && p.candidateName === app.candidateName,
+          (p) =>
+            p.organisationId === organisationId &&
+            p.onboardingStatus !== 'TERMINATED' &&
+            p.onboardingStatus !== 'COMPLETED' &&
+            ((app.customerId && p.customerId === app.customerId) ||
+              p.candidateName.trim().toLowerCase() === app.candidateName.trim().toLowerCase()),
         );
+        // Automatically close other open applications from this candidate at the same organisation
+        for (const otherApp of state.applications) {
+          if (
+            otherApp.organisationId === organisationId &&
+            otherApp.id !== app.id &&
+            otherApp.status !== 'HIRED' &&
+            otherApp.status !== 'REJECTED' &&
+            otherApp.status !== 'WITHDRAWN' &&
+            ((app.customerId && otherApp.customerId === app.customerId) ||
+              (app.userUid && otherApp.userUid === app.userUid) ||
+              otherApp.candidateEmail.toLowerCase() === app.candidateEmail.toLowerCase() ||
+              otherApp.candidateName.trim().toLowerCase() === app.candidateName.trim().toLowerCase())
+          ) {
+            otherApp.status = 'WITHDRAWN';
+            otherApp.internalNotes = `Automatically withdrawn — candidate was hired for ${app.vacancyTitle}.`;
+            otherApp.updatedAt = app.updatedAt;
+          }
+        }
         let plc = existingPlc;
         if (!plc) {
+          const startDate = app.updatedAt.slice(0, 10);
           plc = {
             id: `plc-${crypto.randomUUID().slice(0, 10)}`,
             organisationId,
@@ -461,21 +622,32 @@ export class PlatformService {
             candidateName: app.candidateName,
             roleTitle: app.vacancyTitle,
             contractModel: 'DIRECT_PLACEMENT',
-            startDate: app.updatedAt.slice(0, 10),
+            startDate,
+            nextBillingDate: addDaysIso(startDate, 28),
             monthlySalaryCents: Math.round(offerUsd * 100),
             currency: 'USD',
             legalEntityArranged: true,
             taxComplianceReady: true,
-            onboardingStatus: 'ACTIVE',
+            onboardingStatus:
+              org?.category === 'RELOCATION_AGENCY' || org?.category === 'IMMIGRATION_CONSULTANCY'
+                ? 'DOCUMENTS_REVIEW'
+                : org?.category === 'SCHOLARSHIP_PROVIDER' || org?.category === 'EDUCATIONAL_INSTITUTION'
+                  ? 'SCHOLAR_AWARDED'
+                  : org?.category === 'INVESTMENT_PROVIDER'
+                    ? 'TERM_SHEET'
+                    : 'ACTIVE',
             timesheets: [],
             payrollRecords: [],
             createdAt: app.updatedAt,
             updatedAt: app.updatedAt,
           };
           state.placements.unshift(plc);
+        } else if (!plc.nextBillingDate) {
+          plc.nextBillingDate = addDaysIso(plc.startDate, 28);
         }
         if (org && offerUsd > 0) {
           const billingMonth = app.updatedAt.slice(0, 7);
+          const dueDate = plc.nextBillingDate || addDaysIso(plc.startDate, 28);
           void this.createOrGetMonthlyInvoice({
             org,
             placementId: plc.id,
@@ -486,9 +658,36 @@ export class PlatformService {
             candidateName: app.candidateName,
             candidateEmail: app.candidateEmail,
             billingMonth,
+            dueDate,
             offerAmountUsd: offerUsd,
           });
         }
+      } else if (updates.status === 'WITHDRAWN' || updates.status === 'REJECTED') {
+        const candNameLower = app.candidateName.trim().toLowerCase();
+        const matchesCandidate = (candidateName?: string, customerId?: string) =>
+          (app.customerId && customerId && customerId === app.customerId) ||
+          candidateName?.trim().toLowerCase() === candNameLower;
+
+        // Remove any unpaid/pending invoices attached to this withdrawn/rejected application
+        state.invoices = state.invoices.filter(
+          (i) =>
+            !(
+              i.organisationId === organisationId &&
+              i.status === 'PENDING' &&
+              (i.applicationId === app.id ||
+                (i.vacancyId === app.vacancyId && matchesCandidate(i.candidateName)))
+            ),
+        );
+
+        // Remove any placement created from this withdrawn/rejected application
+        state.placements = state.placements.filter(
+          (p) =>
+            !(
+              p.organisationId === organisationId &&
+              p.vacancyId === app.vacancyId &&
+              matchesCandidate(p.candidateName, p.customerId)
+            ),
+        );
       }
     }
 
@@ -726,16 +925,23 @@ export class PlatformService {
     if (!interview) throw new Error('Interview not found or access denied');
 
     const prevStatus = interview.status;
+    const prevDate = interview.interviewDate;
+    const prevTime = interview.interviewTime;
     Object.assign(interview, updates, { updatedAt: new Date().toISOString() });
 
-    if (updates.status && updates.status !== prevStatus) {
+    const rescheduled =
+      (updates.interviewDate && updates.interviewDate !== prevDate) ||
+      (updates.interviewTime && updates.interviewTime !== prevTime);
+
+    if ((updates.status && updates.status !== prevStatus) || rescheduled) {
+      const actionLabel = rescheduled && updates.status !== 'CANCELLED' ? 'RESCHEDULED' : (updates.status || 'UPDATED');
       state.notifications.unshift({
         id: `ntf-${crypto.randomUUID().slice(0, 8)}`,
         customerId: interview.customerId,
         userUid: interview.userUid,
         type: 'INTERVIEW_UPDATE',
-        title: `Interview ${updates.status}: ${interview.jobTitle}`,
-        message: `${interview.companyName} updated your interview to ${updates.status} (${interview.interviewDate} ${interview.interviewTime}).`,
+        title: `Interview ${actionLabel}: ${interview.jobTitle}`,
+        message: `${interview.companyName} updated your interview to ${actionLabel} (${interview.interviewDate} ${interview.interviewTime}).`,
         actionUrl: '/app',
         isRead: false,
         createdAt: interview.updatedAt,
@@ -743,13 +949,48 @@ export class PlatformService {
 
       sendMail({
         to: interview.candidateEmail,
-        subject: `Interview ${updates.status}: ${interview.jobTitle} — ${interview.companyName}`,
-        html: `<div style="font-family:Montserrat,Arial,sans-serif;padding:20px;"><p>Hi ${interview.candidateName}, your interview with <strong>${interview.companyName}</strong> for <strong>${interview.jobTitle}</strong> is now marked as <strong>${updates.status}</strong> (${interview.interviewDate} at ${interview.interviewTime} ${interview.timezone}).</p></div>`,
+        subject: `Interview ${actionLabel}: ${interview.jobTitle} — ${interview.companyName}`,
+        html: `<div style="font-family:Montserrat,Arial,sans-serif;padding:20px;"><p>Hi ${interview.candidateName}, your interview with <strong>${interview.companyName}</strong> for <strong>${interview.jobTitle}</strong> is now <strong>${actionLabel}</strong> (${interview.interviewDate} at ${interview.interviewTime} ${interview.timezone} • ${interview.locationOrLink}).</p></div>`,
       }).catch(() => undefined);
+    }
+
+    if (updates.status === 'COMPLETED' && interview.applicationId) {
+      const linkedApp = state.applications.find((a) => a.id === interview.applicationId);
+      if (linkedApp && linkedApp.status === 'INTERVIEW_SCHEDULED') {
+        linkedApp.status = 'INTERVIEWED';
+        linkedApp.updatedAt = interview.updatedAt;
+      }
     }
 
     platformStore.save();
     return interview;
+  }
+
+  public async generateAiInterviewQuestions(organisationId: string, interviewId: string): Promise<string> {
+    const state = platformStore.getState();
+    const iv = state.interviews.find((i) => i.id === interviewId && i.organisationId === organisationId);
+    if (!iv) throw new Error('Interview not found');
+    const app = state.applications.find((a) => a.id === iv.applicationId);
+    const vac = state.vacancies.find((v) => v.id === iv.vacancyId);
+
+    const prompt = [
+      `Generate 5 sharp, role-specific interview questions and evaluation signals for ${iv.candidateName} interviewing for ${iv.jobTitle}.`,
+      vac ? `Required Skills: ${(vac.requiredSkills || []).join(', ')}. Requirements: ${vac.requirements}` : '',
+      app?.aiMatchSummary ? `AI CV Summary: ${app.aiMatchSummary}` : '',
+      app?.aiGaps?.length ? `Areas to probe: ${app.aiGaps.join(', ')}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    const ai = await this.runEmployerAiAssistant({
+      organisationId,
+      action: 'DRAFT_MESSAGE',
+      prompt,
+    });
+    iv.interviewerNotes = ai.text;
+    iv.updatedAt = new Date().toISOString();
+    platformStore.save();
+    return ai.text;
   }
 
   public listInterviewsForCandidate(
@@ -797,6 +1038,19 @@ export class PlatformService {
     },
   ): PlacementRecord {
     const state = platformStore.getState();
+    const existingActive = state.placements.find(
+      (p) =>
+        p.organisationId === organisationId &&
+        p.onboardingStatus !== 'TERMINATED' &&
+        p.onboardingStatus !== 'COMPLETED' &&
+        ((input.customerId && p.customerId === input.customerId) ||
+          p.candidateName.trim().toLowerCase() === input.candidateName.trim().toLowerCase()),
+    );
+    if (existingActive) {
+      throw new Error(
+        `${input.candidateName} is already an active employee (${existingActive.roleTitle}) in this organisation.`,
+      );
+    }
     const now = new Date().toISOString();
     const placement: PlacementRecord = {
       id: `plc-${crypto.randomUUID().slice(0, 10)}`,
@@ -880,7 +1134,17 @@ export class PlatformService {
   }
 
   public listPlacements(organisationId: string): PlacementRecord[] {
-    return platformStore.getState().placements.filter((p) => p.organisationId === organisationId);
+    const all = platformStore.getState().placements.filter((p) => p.organisationId === organisationId);
+    const seenActive = new Set<string>();
+    return all.filter((p) => {
+      if (p.onboardingStatus === 'TERMINATED' || p.onboardingStatus === 'COMPLETED') {
+        return true;
+      }
+      const key = (p.customerId || p.candidateName).trim().toLowerCase();
+      if (seenActive.has(key)) return false;
+      seenActive.add(key);
+      return true;
+    });
   }
 
   public listNotifications(filter: { userUid?: string; organisationId?: string }): NotificationRecord[] {
@@ -1050,7 +1314,25 @@ export class PlatformService {
   }
 
   public listInvoices(organisationId: string): MonthlyInvoiceRecord[] {
-    return platformStore.getState().invoices.filter((i) => i.organisationId === organisationId);
+    const state = platformStore.getState();
+    return state.invoices.filter((i) => {
+      if (i.organisationId !== organisationId) return false;
+      if (i.status === 'PENDING') {
+        if (i.applicationId) {
+          const app = state.applications.find((a) => a.id === i.applicationId);
+          if (app && (app.status === 'WITHDRAWN' || app.status === 'REJECTED')) {
+            return false;
+          }
+        }
+        if (i.placementId) {
+          const plc = state.placements.find((p) => p.id === i.placementId);
+          if (plc && plc.onboardingStatus === 'TERMINATED') {
+            return false;
+          }
+        }
+      }
+      return true;
+    });
   }
 
   private async createOrGetMonthlyInvoice(params: {
@@ -1063,6 +1345,7 @@ export class PlatformService {
     candidateName: string;
     candidateEmail: string;
     billingMonth: string;
+    dueDate?: string;
     offerAmountUsd: number;
   }): Promise<MonthlyInvoiceRecord> {
     const state = platformStore.getState();
@@ -1104,6 +1387,9 @@ export class PlatformService {
       // non-fatal
     }
 
+    const dueDate = params.dueDate || addDaysIso(new Date().toISOString().slice(0, 10), 28);
+    const nextDueDate = addDaysIso(dueDate, 28);
+
     const invoice: MonthlyInvoiceRecord = {
       id: `inv-${crypto.randomUUID().slice(0, 10)}`,
       invoiceNumber,
@@ -1118,6 +1404,8 @@ export class PlatformService {
       candidateName: params.candidateName,
       candidateEmail: params.candidateEmail,
       billingMonth: params.billingMonth,
+      dueDate,
+      nextDueDate,
       offerAmountUsd: params.offerAmountUsd,
       feePercent,
       feeAmountUsd,
@@ -1143,7 +1431,7 @@ export class PlatformService {
     sendMail({
       to: billingEmail,
       subject: `Nexora AI Invoice ${invoiceNumber} — $${feeAmountUsd.toFixed(2)} USD (${params.billingMonth})`,
-      html: `<div style="font-family:Montserrat,Arial,sans-serif;padding:20px;"><h2>Nexora AI Monthly Platform Invoice</h2><p>Hello ${orgName},</p><p>Your monthly invoice (<strong>${invoiceNumber}</strong>) for accepted candidate <strong>${params.candidateName}</strong> (${params.vacancyTitle}) is ready.</p><ul><li><strong>Monthly Offer Value:</strong> $${params.offerAmountUsd.toFixed(2)} USD</li><li><strong>Nexora Platform Fee (10%):</strong> $${feeAmountUsd.toFixed(2)} USD</li><li><strong>Billing Month:</strong> ${params.billingMonth}</li></ul><p>Please pay online via Paystack in your <strong>Nexora Company Dashboard → Billing & Invoices</strong>.</p></div>`,
+      html: `<div style="font-family:Montserrat,Arial,sans-serif;padding:20px;"><h2>Nexora AI Recruiting Fee Invoice (10% of CTC)</h2><p>Hello ${orgName},</p><p>Your invoice (<strong>${invoiceNumber}</strong>) for accepted candidate <strong>${params.candidateName}</strong> (${params.vacancyTitle}) is ready.</p><ul><li><strong>Max Monthly Budget (CTC):</strong> $${params.offerAmountUsd.toFixed(2)} USD</li><li><strong>Candidate Net Payout (90%):</strong> $${(params.offerAmountUsd * 0.9).toFixed(2)} USD</li><li><strong>Nexora Recruiting Fee (10% deducted from CTC):</strong> $${feeAmountUsd.toFixed(2)} USD</li><li><strong>Billing Month:</strong> ${params.billingMonth}</li></ul><p>Zero extra cost above your stated budget. Pay Nexora's 10% share online via Paystack in your <strong>Nexora Company Dashboard → Billing &amp; 10% Fees</strong>.</p></div>`,
     }).catch(() => undefined);
 
     return invoice;
@@ -1160,13 +1448,35 @@ export class PlatformService {
     const hiredApps = state.applications.filter(
       (a) => a.organisationId === organisationId && a.status === 'HIRED',
     );
+    const seenCandidates = new Set<string>();
     const created: MonthlyInvoiceRecord[] = [];
     for (const app of hiredApps) {
+      const candKey = (app.customerId || app.candidateEmail || app.candidateName).trim().toLowerCase();
+      if (seenCandidates.has(candKey)) continue;
+      seenCandidates.add(candKey);
       const vac = state.vacancies.find((v) => v.id === app.vacancyId);
-      const offerUsd = Number(vac?.monthlyOfferUsd || 0);
+      const plc = state.placements.find(
+        (p) =>
+          p.organisationId === organisationId &&
+          p.candidateName === app.candidateName &&
+          (p.vacancyId === app.vacancyId || p.roleTitle === app.vacancyTitle),
+      );
+      const offerUsd =
+        plc?.monthlySalaryCents && plc.monthlySalaryCents > 0
+          ? plc.monthlySalaryCents / 100
+          : Number(vac?.monthlyOfferUsd || 0);
       if (offerUsd <= 0) continue;
+      const dueDate =
+        plc?.nextBillingDate ||
+        (plc?.startDate
+          ? addDaysIso(plc.startDate, 28)
+          : addDaysIso(app.updatedAt.slice(0, 10), 28));
+      if (plc && !plc.nextBillingDate) {
+        plc.nextBillingDate = dueDate;
+      }
       const inv = await this.createOrGetMonthlyInvoice({
         org,
+        placementId: plc?.id,
         applicationId: app.id,
         vacancyId: app.vacancyId,
         vacancyTitle: app.vacancyTitle,
@@ -1174,11 +1484,124 @@ export class PlatformService {
         candidateName: app.candidateName,
         candidateEmail: app.candidateEmail,
         billingMonth,
+        dueDate,
         offerAmountUsd: offerUsd,
       });
       created.push(inv);
     }
     return created;
+  }
+
+  public async updatePlacementSalary(
+    organisationId: string,
+    placementId: string,
+    monthlyCtcUsd: number,
+  ): Promise<PlacementRecord> {
+    const state = platformStore.getState();
+    const plc = state.placements.find((p) => p.id === placementId && p.organisationId === organisationId);
+    if (!plc) throw new Error('Employee placement not found');
+
+    const cleanCtc = Math.max(0, Number(monthlyCtcUsd) || 0);
+    plc.monthlySalaryCents = Math.round(cleanCtc * 100);
+    plc.updatedAt = new Date().toISOString();
+
+    const currentMonth = new Date().toISOString().slice(0, 7);
+    const pendingInv = state.invoices.find(
+      (i) =>
+        i.organisationId === organisationId &&
+        i.status === 'PENDING' &&
+        i.billingMonth === currentMonth &&
+        (i.placementId === plc.id || (i.candidateName === plc.candidateName && i.vacancyTitle === plc.roleTitle)),
+    );
+
+    if (pendingInv && cleanCtc > 0) {
+      pendingInv.offerAmountUsd = cleanCtc;
+      pendingInv.feeAmountUsd = Math.round(cleanCtc * 0.1 * 100) / 100;
+      pendingInv.feeAmountCents = Math.round(pendingInv.feeAmountUsd * 100);
+      try {
+        const pdf = await documentGeneratorService.generateMonthlyInvoicePdf({
+          invoiceNumber: pendingInv.invoiceNumber,
+          organisationName: pendingInv.organisationName,
+          billingEmail: pendingInv.billingEmail,
+          candidateName: pendingInv.candidateName,
+          vacancyTitle: pendingInv.vacancyTitle,
+          category: pendingInv.category,
+          billingMonth: pendingInv.billingMonth,
+          offerAmountUsd: pendingInv.offerAmountUsd,
+          feePercent: pendingInv.feePercent,
+          feeAmountUsd: pendingInv.feeAmountUsd,
+          status: pendingInv.status,
+        });
+        pendingInv.pdfFileName = pdf.fileName;
+        pendingInv.pdfDownloadUrl = pdf.downloadUrl;
+      } catch {
+        // non-fatal
+      }
+    } else if (!pendingInv && cleanCtc > 0) {
+      const org = state.organisations.find((o) => o.id === organisationId);
+      const app = state.applications.find(
+        (a) => a.organisationId === organisationId && a.candidateName === plc.candidateName && a.vacancyTitle === plc.roleTitle,
+      );
+      const vac = state.vacancies.find((v) => v.id === plc.vacancyId);
+      if (org) {
+        await this.createOrGetMonthlyInvoice({
+          org,
+          placementId: plc.id,
+          applicationId: app?.id,
+          vacancyId: plc.vacancyId,
+          vacancyTitle: plc.roleTitle,
+          category: vac?.category || 'EMPLOYMENT',
+          candidateName: plc.candidateName,
+          candidateEmail: app?.candidateEmail || org.businessEmail,
+          billingMonth: currentMonth,
+          offerAmountUsd: cleanCtc,
+        });
+      }
+    }
+
+    platformStore.save();
+    return plc;
+  }
+
+  public updatePlacementStatus(
+    organisationId: string,
+    placementId: string,
+    onboardingStatus: PlacementRecord['onboardingStatus'],
+  ): PlacementRecord {
+    const state = platformStore.getState();
+    const plc = state.placements.find((p) => p.id === placementId && p.organisationId === organisationId);
+    if (!plc) throw new Error('Employee placement not found');
+    plc.onboardingStatus = onboardingStatus;
+    plc.updatedAt = new Date().toISOString();
+    if (onboardingStatus === 'TERMINATED') {
+      state.invoices = state.invoices.filter(
+        (i) =>
+          !(
+            i.organisationId === organisationId &&
+            i.status === 'PENDING' &&
+            (i.placementId === plc.id ||
+              (i.candidateName.trim().toLowerCase() === plc.candidateName.trim().toLowerCase() &&
+                i.vacancyTitle === plc.roleTitle))
+          ),
+      );
+    }
+    platformStore.save();
+    return plc;
+  }
+
+  public async runAutomatedMonthlyBillingCycle(): Promise<number> {
+    const state = platformStore.getState();
+    const billingMonth = new Date().toISOString().slice(0, 7);
+    let totalGenerated = 0;
+    for (const org of state.organisations) {
+      try {
+        const list = await this.generateMonthlyInvoicesForOrganisation(org.id, billingMonth);
+        totalGenerated += list.length;
+      } catch {
+        // continue other organisations
+      }
+    }
+    return totalGenerated;
   }
 
   public async initializeInvoicePaystack(
@@ -1220,8 +1643,109 @@ export class PlatformService {
     inv.status = 'PAID';
     inv.paystackReference = reference;
     inv.paidAt = new Date().toISOString();
+    const currentDue = inv.dueDate || addDaysIso(inv.createdAt, 28);
+    const nextDue = addDaysIso(currentDue, 28);
+    inv.dueDate = currentDue;
+    inv.nextDueDate = nextDue;
+
+    const plc = state.placements.find(
+      (p) =>
+        p.organisationId === organisationId &&
+        (p.id === inv.placementId || (p.candidateName === inv.candidateName && p.roleTitle === inv.vacancyTitle)),
+    );
+    if (plc) {
+      plc.nextBillingDate = nextDue;
+      plc.updatedAt = inv.paidAt;
+    }
+
     platformStore.save();
     return inv;
+  }
+
+  public async initializeBulkInvoicesPaystack(
+    organisationId: string,
+    callbackUrl?: string,
+  ) {
+    const state = platformStore.getState();
+    const org = state.organisations.find((o) => o.id === organisationId);
+    const pending = state.invoices.filter(
+      (i) => i.organisationId === organisationId && i.status === 'PENDING',
+    );
+    if (pending.length === 0) {
+      throw new Error('No pending invoices to pay.');
+    }
+
+    const totalCentsUsd = pending.reduce(
+      (sum, inv) => sum + (inv.feeAmountCents || Math.round(Number(inv.feeAmountUsd || 0) * 100)),
+      0,
+    );
+    if (totalCentsUsd <= 0) {
+      throw new Error('Total amount due must be greater than $0.00.');
+    }
+
+    const billingEmail = org?.billingEmail || org?.businessEmail || pending[0].billingEmail;
+    const init = await paystackService.initializeInvoicePayment({
+      invoiceId: pending.map((i) => i.id).join(','),
+      organisationId,
+      email: billingEmail,
+      amountCentsUsd: totalCentsUsd,
+      callbackUrl,
+    });
+
+    for (const inv of pending) {
+      inv.paystackReference = init.reference;
+    }
+    platformStore.save();
+
+    return {
+      ...init,
+      invoiceCount: pending.length,
+      totalAmountUsd: Math.round(totalCentsUsd) / 100,
+    };
+  }
+
+  public async verifyBulkInvoicesPaystack(
+    organisationId: string,
+    reference: string,
+  ): Promise<{ paidCount: number; invoices: MonthlyInvoiceRecord[] }> {
+    const state = platformStore.getState();
+    const verified = await paystackService.verifyTransaction(reference);
+    if (!verified.paid) {
+      throw new Error(`Payment not completed yet (status: ${verified.status})`);
+    }
+
+    const nowIso = new Date().toISOString();
+    let targets = state.invoices.filter(
+      (i) => i.organisationId === organisationId && i.status === 'PENDING' && i.paystackReference === reference,
+    );
+    if (targets.length === 0) {
+      targets = state.invoices.filter(
+        (i) => i.organisationId === organisationId && i.status === 'PENDING',
+      );
+    }
+
+    for (const inv of targets) {
+      inv.status = 'PAID';
+      inv.paystackReference = reference;
+      inv.paidAt = nowIso;
+      const currentDue = inv.dueDate || addDaysIso(inv.createdAt, 28);
+      const nextDue = addDaysIso(currentDue, 28);
+      inv.dueDate = currentDue;
+      inv.nextDueDate = nextDue;
+
+      const plc = state.placements.find(
+        (p) =>
+          p.organisationId === organisationId &&
+          (p.id === inv.placementId || (p.candidateName === inv.candidateName && p.roleTitle === inv.vacancyTitle)),
+      );
+      if (plc) {
+        plc.nextBillingDate = nextDue;
+        plc.updatedAt = nowIso;
+      }
+    }
+
+    platformStore.save();
+    return { paidCount: targets.length, invoices: targets };
   }
 
   // ==================== COMPANY TEAM / APP USERS ====================
@@ -1301,5 +1825,539 @@ export class PlatformService {
       (u) => !(u.id === userId && u.organisationId === organisationId),
     );
     platformStore.save();
+  }
+
+  // ==================== VACANCY MATCHING CANDIDATES & INTERVIEW INVITES ====================
+  public async getMatchingCandidatesForVacancy(organisationId: string, vacancyId: string) {
+    const state = platformStore.getState();
+    const vac = state.vacancies.find((v) => v.id === vacancyId && v.organisationId === organisationId);
+    if (!vac) throw new Error('Vacancy not found or access denied');
+
+    const [fbCandidates, fbUsers] = await Promise.all([
+      platformStore.fetchFirestoreCollection('candidates'),
+      platformStore.fetchFirestoreCollection('users'),
+    ]);
+
+    type CandidatePoolEntry = {
+      userUid: string;
+      customerId: string;
+      candidateName: string;
+      candidateEmail: string;
+      candidatePhone?: string;
+      headline?: string;
+      location?: string;
+      skills: string[];
+      qualifications?: string;
+      workExperience?: string;
+      yearsExperience: number;
+      hasCandidateProfile: boolean;
+      hasTranscript: boolean;
+      assessmentScore?: number;
+      transcriptId?: string;
+      hasCv: boolean;
+      cvFileName?: string;
+      cvDownloadUrl?: string;
+    };
+
+    const byKey = new Map<string, CandidatePoolEntry>();
+
+    // 1. Seed from Firestore `candidates` collection first (users with candidate profiles)
+    for (const c of fbCandidates) {
+      const uid = String(c.userId || c.uid || c.id || '').trim();
+      const email = String(c.email || '').trim().toLowerCase();
+      if (!uid && !email) continue;
+      const key = uid || email;
+      const skills: string[] = Array.isArray(c.skills)
+        ? c.skills.map(String)
+        : typeof c.skills === 'string'
+          ? c.skills.split(',').map((s: string) => s.trim()).filter(Boolean)
+          : [];
+      byKey.set(key, {
+        userUid: uid || key,
+        customerId: uid || key,
+        candidateName: String(c.fullName || c.name || c.displayName || email.split('@')[0] || 'Candidate'),
+        candidateEmail: email || `${uid}@nexora.user`,
+        candidatePhone: c.phone ? String(c.phone) : undefined,
+        headline: c.targetRole || c.headline || c.summary ? String(c.targetRole || c.headline || c.summary).slice(0, 140) : undefined,
+        location: c.location || c.country ? String(c.location || c.country) : undefined,
+        skills,
+        qualifications: c.qualifications || c.education ? String(c.qualifications || c.education) : undefined,
+        workExperience: c.experience || c.workExperience ? String(c.experience || c.workExperience) : undefined,
+        yearsExperience: Number(c.yearsExperience || 0) || 0,
+        hasCandidateProfile: true,
+        hasTranscript: false,
+        hasCv: Boolean(c.cvText || c.cvFileName),
+        cvFileName: c.cvFileName ? String(c.cvFileName) : undefined,
+      });
+    }
+
+    // 2. Merge Firestore `users` collection
+    for (const u of fbUsers) {
+      const uid = String(u.uid || u.id || '').trim();
+      const email = String(u.email || '').trim().toLowerCase();
+      if (!uid && !email) continue;
+      const key = uid || email;
+      const existing = byKey.get(key);
+      if (existing) {
+        if (!existing.candidateEmail && email) existing.candidateEmail = email;
+        if ((!existing.candidateName || existing.candidateName === 'Candidate') && (u.displayName || u.name)) {
+          existing.candidateName = String(u.displayName || u.name);
+        }
+      } else {
+        byKey.set(key, {
+          userUid: uid || key,
+          customerId: uid || key,
+          candidateName: String(u.displayName || u.name || (email ? email.split('@')[0] : 'Nexora User')),
+          candidateEmail: email || `${uid}@nexora.user`,
+          skills: [],
+          yearsExperience: 0,
+          hasCandidateProfile: false,
+          hasTranscript: false,
+          hasCv: false,
+        });
+      }
+    }
+
+    // 3. Merge existing platform supporting docs (CVs), transcripts, and prior applications
+    for (const doc of state.supportingDocuments) {
+      if (doc.docType !== 'CV') continue;
+      const entry = byKey.get(doc.userUid);
+      if (entry) {
+        entry.hasCv = true;
+        entry.hasCandidateProfile = true;
+        entry.cvFileName = entry.cvFileName || doc.fileName;
+        entry.cvDownloadUrl = doc.downloadUrl;
+      }
+    }
+
+    for (const tr of state.transcripts) {
+      const key = tr.userUid;
+      const existing = byKey.get(key);
+      if (existing) {
+        existing.hasTranscript = true;
+        existing.hasCandidateProfile = true;
+        existing.assessmentScore = Math.max(existing.assessmentScore || 0, tr.percentageScore || 0);
+        existing.transcriptId = tr.id;
+      } else {
+        byKey.set(key, {
+          userUid: tr.userUid,
+          customerId: tr.customerId || tr.userUid,
+          candidateName: tr.candidateName || 'Screened Candidate',
+          candidateEmail: tr.candidateEmail || `${tr.userUid}@nexora.user`,
+          skills: [],
+          yearsExperience: 0,
+          hasCandidateProfile: true,
+          hasTranscript: true,
+          assessmentScore: tr.percentageScore,
+          transcriptId: tr.id,
+          hasCv: false,
+        });
+      }
+    }
+
+    for (const a of state.applications) {
+      const key = a.userUid || a.candidateEmail.toLowerCase();
+      const existing = byKey.get(key);
+      if (existing) {
+        existing.hasCandidateProfile = true;
+        if (existing.skills.length === 0 && a.skills?.length) existing.skills = [...a.skills];
+        if (!existing.qualifications && a.qualifications) existing.qualifications = a.qualifications;
+        if (!existing.workExperience && a.workExperience) existing.workExperience = a.workExperience;
+        if (!existing.cvDownloadUrl && a.cvDownloadUrl) {
+          existing.hasCv = true;
+          existing.cvFileName = a.cvFileName;
+          existing.cvDownloadUrl = a.cvDownloadUrl;
+        }
+      } else {
+        byKey.set(key, {
+          userUid: a.userUid,
+          customerId: a.customerId,
+          candidateName: a.candidateName,
+          candidateEmail: a.candidateEmail,
+          candidatePhone: a.candidatePhone,
+          skills: [...(a.skills || [])],
+          qualifications: a.qualifications,
+          workExperience: a.workExperience,
+          yearsExperience: 0,
+          hasCandidateProfile: true,
+          hasTranscript: Boolean(a.transcriptId),
+          assessmentScore: a.transcriptScore,
+          transcriptId: a.transcriptId,
+          hasCv: Boolean(a.cvFileName || a.cvDownloadUrl),
+          cvFileName: a.cvFileName,
+          cvDownloadUrl: a.cvDownloadUrl,
+        });
+      }
+    }
+
+    const reqSkills = (vac.requiredSkills || []).map((s) => s.toLowerCase().trim()).filter(Boolean);
+    const titleWords = `${vac.title} ${vac.description || ''}`
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((w) => w.length > 3);
+
+    const results = Array.from(byKey.values()).map((c) => {
+      const profileBlob = `${c.headline || ''} ${c.qualifications || ''} ${c.workExperience || ''} ${c.skills.join(' ')}`.toLowerCase();
+      const matchedSkills = reqSkills.filter((sk) => profileBlob.includes(sk));
+      const skillRatio = reqSkills.length > 0 ? matchedSkills.length / reqSkills.length : 0.4;
+      const wordHits = titleWords.filter((w) => profileBlob.includes(w)).length;
+      const keywordScore = Math.min(20, wordHits * 4);
+      const expScore =
+        vac.minYearsExperience > 0
+          ? c.yearsExperience >= vac.minYearsExperience
+            ? 15
+            : Math.round((c.yearsExperience / vac.minYearsExperience) * 15)
+          : 10;
+      const transcriptBonus = c.hasTranscript ? 15 : 0;
+      const cvBonus = c.hasCv ? 10 : 0;
+      const rawScore = Math.round(skillRatio * 40 + keywordScore + expScore + transcriptBonus + cvBonus);
+      const matchScore = Math.max(c.hasCandidateProfile ? 35 : 15, Math.min(100, rawScore));
+
+      const appForVac = state.applications.find(
+        (a) =>
+          a.vacancyId === vacancyId &&
+          a.organisationId === organisationId &&
+          (a.userUid === c.userUid || a.candidateEmail.toLowerCase() === c.candidateEmail.toLowerCase()),
+      );
+      const invForVac = state.interviews.find(
+        (iv) =>
+          iv.vacancyId === vacancyId &&
+          iv.organisationId === organisationId &&
+          iv.status !== 'CANCELLED' &&
+          (iv.userUid === c.userUid || iv.candidateEmail.toLowerCase() === c.candidateEmail.toLowerCase()),
+      );
+
+      const userDocs = state.supportingDocuments
+        .filter((d) => d.userUid === c.userUid)
+        .map((d) => ({
+          id: d.id,
+          docType: d.docType,
+          label: d.label,
+          fileName: d.fileName,
+          downloadUrl: d.downloadUrl,
+          createdAt: d.createdAt,
+        }));
+      const userTranscripts = state.transcripts
+        .filter((t) => t.userUid === c.userUid)
+        .map((t) => ({
+          id: t.id,
+          assignmentTitle: t.assignmentTitle,
+          percentageScore: t.percentageScore,
+          pdfDownloadUrl: t.pdfDownloadUrl,
+          submittedAt: t.submittedAt,
+        }));
+
+      return {
+        ...c,
+        documents: userDocs,
+        transcripts: userTranscripts,
+        matchedSkills,
+        matchScore,
+        alreadyApplied: Boolean(appForVac),
+        applicationStatus: appForVac?.status,
+        alreadyInvited: Boolean(invForVac),
+        interviewStatus: invForVac?.status,
+      };
+    });
+
+    // Always return users WITH candidate profiles FIRST, then sort by matchScore descending
+    results.sort((a, b) => {
+      if (a.hasCandidateProfile !== b.hasCandidateProfile) {
+        return a.hasCandidateProfile ? -1 : 1;
+      }
+      if (b.matchScore !== a.matchScore) {
+        return b.matchScore - a.matchScore;
+      }
+      return (b.assessmentScore || 0) - (a.assessmentScore || 0);
+    });
+
+    return results.slice(0, 60);
+  }
+
+  public async autoApplyMatchedCandidate(
+    organisationId: string,
+    vacancyId: string,
+    input: {
+      userUid: string;
+      customerId?: string;
+      candidateName: string;
+      candidateEmail: string;
+    },
+  ): Promise<VacancyApplicationRecord> {
+    const state = platformStore.getState();
+    const org = state.organisations.find((o) => o.id === organisationId);
+    const vac = state.vacancies.find((v) => v.id === vacancyId && v.organisationId === organisationId);
+    if (!org || !vac) throw new Error('Organisation or vacancy not found');
+
+    const existing = state.applications.find(
+      (a) =>
+        a.organisationId === organisationId &&
+        a.vacancyId === vacancyId &&
+        (a.userUid === input.userUid || a.candidateEmail.toLowerCase() === input.candidateEmail.toLowerCase()),
+    );
+    if (existing) {
+      return existing;
+    }
+
+    const fbCandidates = await platformStore.fetchFirestoreCollection('candidates');
+    const dossier = fbCandidates.find(
+      (c) => c.userId === input.userUid || c.uid === input.userUid || c.id === input.userUid,
+    );
+    const cvDoc = state.supportingDocuments.find(
+      (d) => d.userUid === input.userUid && d.docType === 'CV',
+    );
+    const transcript = state.transcripts.find((t) => t.userUid === input.userUid);
+    const skills: string[] = Array.isArray(dossier?.skills)
+      ? dossier.skills.map(String)
+      : typeof dossier?.skills === 'string'
+        ? dossier.skills.split(',').map((s: string) => s.trim()).filter(Boolean)
+        : [];
+
+    const now = new Date().toISOString();
+    const app: VacancyApplicationRecord = {
+      id: `app-${crypto.randomUUID().slice(0, 10)}`,
+      referenceCode: `AUTO-${crypto.randomUUID().slice(0, 6).toUpperCase()}`,
+      vacancyId: vac.id,
+      vacancyTitle: vac.title,
+      organisationId,
+      organisationName: org.tradingName || org.registeredName,
+      customerId: input.customerId || input.userUid,
+      userUid: input.userUid,
+      candidateName: input.candidateName,
+      candidateEmail: input.candidateEmail,
+      candidatePhone: dossier?.phone ? String(dossier.phone) : undefined,
+      skills,
+      qualifications:
+        dossier?.qualifications || dossier?.education
+          ? String(dossier.qualifications || dossier.education)
+          : undefined,
+      workExperience:
+        dossier?.experience || dossier?.workExperience
+          ? String(dossier.experience || dossier.workExperience)
+          : undefined,
+      cvFileName: cvDoc?.fileName || (dossier?.cvFileName ? String(dossier.cvFileName) : undefined),
+      cvDownloadUrl: cvDoc?.downloadUrl,
+      transcriptId: transcript?.id,
+      transcriptScore: transcript?.percentageScore,
+      transcriptPdfUrl: transcript?.pdfDownloadUrl,
+      consentToShare: true,
+      status: 'RECEIVED',
+      internalNotes: 'Auto-submitted from Nexora AI Smart Matching Candidates.',
+      communications: [],
+      appliedAt: now,
+      updatedAt: now,
+    };
+
+    await this.scoreApplicationInternal(app, vac);
+    state.applications.unshift(app);
+    state.notifications.unshift({
+      id: `ntf-${crypto.randomUUID().slice(0, 8)}`,
+      customerId: app.customerId,
+      userUid: app.userUid,
+      type: 'AUTO_APPLICATION_SUBMITTED',
+      title: `Matched & Auto-Applied: ${vac.title}`,
+      message: `${app.organisationName} selected your Nexora AI profile for ${vac.title} and auto-submitted your CV & documents (Ref: ${app.referenceCode}).`,
+      actionUrl: '/app',
+      isRead: false,
+      createdAt: now,
+    });
+    platformStore.save();
+    return app;
+  }
+
+  public async inviteMatchedCandidateToInterview(
+    organisationId: string,
+    vacancyId: string,
+    input: {
+      userUid: string;
+      customerId?: string;
+      candidateName: string;
+      candidateEmail: string;
+      interviewDate: string;
+      interviewTime: string;
+      timezone?: string;
+      interviewType?: InterviewRecord['interviewType'];
+      locationOrLink: string;
+      instructions?: string;
+    },
+  ): Promise<InterviewRecord> {
+    const state = platformStore.getState();
+    const org = state.organisations.find((o) => o.id === organisationId);
+    const vac = state.vacancies.find((v) => v.id === vacancyId && v.organisationId === organisationId);
+    if (!org || !vac) throw new Error('Organisation or vacancy not found');
+
+    const existing = state.interviews.find(
+      (iv) =>
+        iv.organisationId === organisationId &&
+        iv.vacancyId === vacancyId &&
+        iv.status !== 'CANCELLED' &&
+        (iv.userUid === input.userUid || iv.candidateEmail.toLowerCase() === input.candidateEmail.toLowerCase()),
+    );
+    if (existing) {
+      throw new Error(`${input.candidateName} has already been invited for this vacancy.`);
+    }
+
+    const now = new Date().toISOString();
+    const interview: InterviewRecord = {
+      id: `int-${crypto.randomUUID().slice(0, 10)}`,
+      organisationId,
+      vacancyId,
+      customerId: input.customerId || input.userUid,
+      userUid: input.userUid,
+      companyName: org.tradingName || org.registeredName,
+      jobTitle: vac.title,
+      candidateName: input.candidateName,
+      candidateEmail: input.candidateEmail,
+      interviewDate: input.interviewDate,
+      interviewTime: input.interviewTime,
+      timezone: input.timezone || 'Africa/Johannesburg',
+      interviewType: input.interviewType || 'ONLINE',
+      locationOrLink: input.locationOrLink,
+      instructions: input.instructions,
+      status: 'INVITED',
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    state.interviews.unshift(interview);
+    state.notifications.unshift({
+      id: `ntf-${crypto.randomUUID().slice(0, 8)}`,
+      customerId: interview.customerId,
+      userUid: interview.userUid,
+      type: 'INTERVIEW_INVITATION',
+      title: `Interview Invitation: ${vac.title} at ${interview.companyName}`,
+      message: `${interview.companyName} matched your Nexora profile for ${vac.title} and invited you to interview on ${interview.interviewDate} at ${interview.interviewTime}. Accept in Interviews to auto-apply!`,
+      actionUrl: '/app',
+      isRead: false,
+      createdAt: now,
+    });
+    platformStore.save();
+
+    if (input.candidateEmail && !input.candidateEmail.endsWith('@nexora.user')) {
+      const appUrl = `${process.env.PUBLIC_WEB_URL || 'https://nexora.empirelabs.digital'}/app`;
+      sendMail({
+        to: input.candidateEmail,
+        subject: `Interview Invitation: ${vac.title} — ${interview.companyName} (Nexora AI)`,
+        html: `<div style="font-family:Montserrat,Arial,sans-serif;padding:20px;"><h2>You've Been Matched &amp; Invited for an Interview!</h2><p>Hello ${interview.candidateName},</p><p><strong>${interview.companyName}</strong> found your profile through Nexora AI Smart Matching for <strong>${vac.title}</strong> and would like to interview you.</p><ul><li><strong>Date &amp; Time:</strong> ${interview.interviewDate} at ${interview.interviewTime} (${interview.timezone})</li><li><strong>Format:</strong> ${interview.interviewType}</li><li><strong>Link / Location:</strong> ${interview.locationOrLink}</li></ul><p>Open your <a href="${appUrl}">Nexora AI Interviews</a> tab and click <strong>Interested — Accept &amp; Auto-Apply</strong> to automatically submit your application and confirm your interview slot.</p></div>`,
+      }).catch(() => undefined);
+    }
+
+    return interview;
+  }
+
+  public async respondToInterviewInvitation(
+    interviewId: string,
+    userUid: string,
+    action: 'ACCEPT' | 'DECLINE',
+  ): Promise<{ interview: InterviewRecord; application: VacancyApplicationRecord | null }> {
+    const state = platformStore.getState();
+    const interview = state.interviews.find((iv) => iv.id === interviewId);
+    if (!interview) throw new Error('Interview invitation not found');
+    if (interview.userUid !== userUid && interview.customerId !== userUid) {
+      throw new Error('Unauthorized to respond to this invitation');
+    }
+
+    const now = new Date().toISOString();
+
+    if (action === 'DECLINE') {
+      interview.status = 'CANCELLED';
+      interview.candidateFeedback = 'Candidate declined interview invitation.';
+      interview.updatedAt = now;
+      state.notifications.unshift({
+        id: `ntf-${crypto.randomUUID().slice(0, 8)}`,
+        organisationId: interview.organisationId,
+        type: 'INTERVIEW_DECLINED',
+        title: `Interview Declined: ${interview.candidateName}`,
+        message: `${interview.candidateName} declined the interview invitation for ${interview.jobTitle}.`,
+        actionUrl: '/company/interviews',
+        isRead: false,
+        createdAt: now,
+      });
+      platformStore.save();
+      return { interview, application: null };
+    }
+
+    // ACCEPT -> trigger auto-submission if not yet applied
+    let application =
+      (interview.applicationId
+        ? state.applications.find((a) => a.id === interview.applicationId)
+        : undefined) ||
+      state.applications.find(
+        (a) =>
+          a.organisationId === interview.organisationId &&
+          a.vacancyId === interview.vacancyId &&
+          (a.userUid === userUid || a.candidateEmail.toLowerCase() === interview.candidateEmail.toLowerCase()),
+      ) ||
+      null;
+
+    if (!application) {
+      const vac = state.vacancies.find((v) => v.id === interview.vacancyId);
+      const fbCandidates = await platformStore.fetchFirestoreCollection('candidates');
+      const dossier = fbCandidates.find(
+        (c) => c.userId === userUid || c.uid === userUid || c.id === userUid,
+      );
+      const cvDoc = state.supportingDocuments.find(
+        (d) => d.userUid === userUid && d.docType === 'CV',
+      );
+      const transcript = state.transcripts.find((t) => t.userUid === userUid);
+      const skills: string[] = Array.isArray(dossier?.skills)
+        ? dossier.skills.map(String)
+        : typeof dossier?.skills === 'string'
+          ? dossier.skills.split(',').map((s: string) => s.trim()).filter(Boolean)
+          : [];
+
+      const createdApp: VacancyApplicationRecord = {
+        id: `app-${crypto.randomUUID().slice(0, 10)}`,
+        referenceCode: `AUTO-${crypto.randomUUID().slice(0, 6).toUpperCase()}`,
+        vacancyId: interview.vacancyId || '',
+        vacancyTitle: interview.jobTitle,
+        organisationId: interview.organisationId,
+        organisationName: interview.companyName,
+        customerId: interview.customerId || userUid,
+        userUid,
+        candidateName: interview.candidateName,
+        candidateEmail: interview.candidateEmail,
+        candidatePhone: dossier?.phone ? String(dossier.phone) : undefined,
+        skills,
+        qualifications: dossier?.qualifications || dossier?.education ? String(dossier.qualifications || dossier.education) : undefined,
+        workExperience: dossier?.experience || dossier?.workExperience ? String(dossier.experience || dossier.workExperience) : undefined,
+        cvFileName: cvDoc?.fileName || (dossier?.cvFileName ? String(dossier.cvFileName) : undefined),
+        cvDownloadUrl: cvDoc?.downloadUrl,
+        transcriptId: transcript?.id,
+        transcriptScore: transcript?.percentageScore,
+        transcriptPdfUrl: transcript?.pdfDownloadUrl,
+        consentToShare: true,
+        status: 'INTERVIEW_SCHEDULED',
+        internalNotes: 'Auto-submitted when candidate accepted employer interview invitation.',
+        communications: [],
+        appliedAt: now,
+        updatedAt: now,
+      };
+      await this.scoreApplicationInternal(createdApp, vac);
+      state.applications.unshift(createdApp);
+      application = createdApp;
+    } else if (application.status === 'RECEIVED' || application.status === 'SCREENING' || application.status === 'SHORTLISTED') {
+      application.status = 'INTERVIEW_SCHEDULED';
+      application.updatedAt = now;
+    }
+
+    interview.applicationId = application!.id;
+    interview.status = 'SCHEDULED';
+    interview.candidateFeedback = 'Candidate accepted interview invitation & auto-submitted application.';
+    interview.updatedAt = now;
+
+    state.notifications.unshift({
+      id: `ntf-${crypto.randomUUID().slice(0, 8)}`,
+      organisationId: interview.organisationId,
+      type: 'INTERVIEW_ACCEPTED_AUTO_APPLIED',
+      title: `Candidate Accepted & Auto-Applied: ${interview.candidateName}`,
+      message: `${interview.candidateName} accepted your interview invite for ${interview.jobTitle}. Their application (${application!.referenceCode}) is now in your pipeline.`,
+      actionUrl: '/company/applications',
+      isRead: false,
+      createdAt: now,
+    });
+
+    platformStore.save();
+    return { interview, application };
   }
 }

@@ -88,6 +88,17 @@ export interface VacancyRecord {
   passingScorePercent: number;
   assessmentDurationMin: number;
   applicationDeadline?: string;
+  visaType?: string;
+  targetCountry?: string;
+  processingTime?: string;
+  requiredDocuments?: string[];
+  institutionName?: string;
+  degreeLevel?: string;
+  fundingCoverage?: string;
+  minGpaOrScore?: string;
+  investmentStage?: string;
+  sectorFocus?: string;
+  equityTerms?: string;
   status: 'DRAFT' | 'PUBLISHED' | 'UNPUBLISHED' | 'CLOSED';
   createdAt: string;
   updatedAt: string;
@@ -266,6 +277,7 @@ export interface PlacementRecord {
   roleTitle: string;
   contractModel: 'DIRECT_PLACEMENT' | 'CONTRACTOR_PLACEMENT' | 'NEXORA_EOR_STAFFING';
   startDate: string;
+  nextBillingDate?: string;
   endDate?: string;
   hourlyRateCents?: number;
   monthlySalaryCents?: number;
@@ -348,6 +360,8 @@ export interface MonthlyInvoiceRecord {
   candidateName: string;
   candidateEmail: string;
   billingMonth: string; // YYYY-MM
+  dueDate?: string;
+  nextDueDate?: string;
   offerAmountUsd: number;
   feePercent: number;
   feeAmountUsd: number;
@@ -389,6 +403,25 @@ export interface PlatformStoreState {
 }
 
 const STORE_PATH = path.resolve(process.cwd(), 'node_modules', '.cache', 'nexora-platform-db.json');
+const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || 'nexora-d7346';
+const FIREBASE_API_KEY = process.env.FIREBASE_API_KEY || 'AIzaSyBjRi92-GpP71HcBUUXknw3vPhX3lSh7dk';
+const FIRESTORE_BASE = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/(default)/documents`;
+
+const COLLECTION_MAP: Array<{ key: keyof PlatformStoreState; collection: string }> = [
+  { key: 'organisations', collection: 'nexora_organisations' },
+  { key: 'organisationUsers', collection: 'nexora_organisation_users' },
+  { key: 'vacancies', collection: 'nexora_vacancies' },
+  { key: 'assignments', collection: 'nexora_assignments' },
+  { key: 'sessions', collection: 'nexora_assessment_sessions' },
+  { key: 'transcripts', collection: 'nexora_assessment_transcripts' },
+  { key: 'applications', collection: 'nexora_applications' },
+  { key: 'interviews', collection: 'nexora_interviews' },
+  { key: 'placements', collection: 'nexora_placements' },
+  { key: 'notifications', collection: 'nexora_notifications' },
+  { key: 'documentAccessLogs', collection: 'nexora_doc_access_logs' },
+  { key: 'supportingDocuments', collection: 'nexora_supporting_docs' },
+  { key: 'invoices', collection: 'nexora_invoices' },
+];
 
 const EMPTY_STATE: PlatformStoreState = {
   organisations: [],
@@ -409,6 +442,9 @@ const EMPTY_STATE: PlatformStoreState = {
 class PlatformStore {
   private state: PlatformStoreState = { ...EMPTY_STATE };
   private loaded = false;
+  private syncedJsonByKey = new Map<string, string>();
+  private syncPromise: Promise<void> | null = null;
+  private firebaseHydrated = false;
 
   private ensureLoaded(): void {
     if (this.loaded) return;
@@ -436,6 +472,170 @@ class PlatformStore {
     } catch {
       this.state = { ...EMPTY_STATE };
     }
+    if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
+      void this.syncFromFirebase();
+    }
+  }
+
+  public async syncFromFirebase(): Promise<void> {
+    if (this.syncPromise) return this.syncPromise;
+    this.syncPromise = (async () => {
+      try {
+        for (const { key, collection } of COLLECTION_MAP) {
+          const items: any[] = [];
+          let pageToken = '';
+          do {
+            const url = `${FIRESTORE_BASE}/${collection}?pageSize=300&key=${FIREBASE_API_KEY}${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ''}`;
+            const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
+            if (!res.ok) break;
+            const json = (await res.json()) as {
+              documents?: Array<{ name: string; fields?: Record<string, any> }>;
+              nextPageToken?: string;
+            };
+            for (const doc of json.documents || []) {
+              const fields = doc.fields || {};
+              const hasNativeFields = Object.keys(fields).some(
+                (k) => k !== 'id' && k !== 'userUid' && k !== 'updatedAt' && k !== 'payload',
+              );
+              if (hasNativeFields) {
+                const parsed: Record<string, any> = {};
+                for (const [k, v] of Object.entries(fields)) {
+                  if (k === 'payload') continue;
+                  parsed[k] = this.parseFirestoreValue(v);
+                }
+                if (!parsed.id && doc.name) {
+                  parsed.id = doc.name.split('/').pop() || '';
+                }
+                if (parsed.id) {
+                  items.push(parsed);
+                  this.syncedJsonByKey.set(`${collection}/${parsed.id}`, JSON.stringify(parsed));
+                }
+              } else if (fields.payload?.stringValue) {
+                try {
+                  const parsed = JSON.parse(fields.payload.stringValue);
+                  items.push(parsed);
+                  // Leave out of syncedJsonByKey so next flush upgrades it to native Firestore fields
+                } catch {
+                  // skip malformed doc
+                }
+              }
+            }
+            pageToken = json.nextPageToken || '';
+          } while (pageToken);
+
+          if (items.length > 0) {
+            // Merge Firebase items with any unsynced local items (Firebase takes precedence for same ID)
+            const byId = new Map<string, any>();
+            for (const localItem of this.state[key] as any[]) {
+              if (localItem?.id) byId.set(localItem.id, localItem);
+            }
+            for (const remoteItem of items) {
+              if (remoteItem?.id) byId.set(remoteItem.id, remoteItem);
+            }
+            (this.state[key] as any[]) = Array.from(byId.values()).sort((a, b) =>
+              String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || '')),
+            );
+          }
+        }
+        this.firebaseHydrated = true;
+        this.writeLocalCache();
+      } catch {
+        // non-fatal if offline
+      } finally {
+        this.syncPromise = null;
+      }
+    })();
+    return this.syncPromise;
+  }
+
+  private toFirestoreValue(val: any): Record<string, any> {
+    if (val === null || val === undefined) return { nullValue: null };
+    if (typeof val === 'string') return { stringValue: val };
+    if (typeof val === 'boolean') return { booleanValue: val };
+    if (typeof val === 'number') {
+      return Number.isInteger(val) ? { integerValue: String(val) } : { doubleValue: val };
+    }
+    if (Array.isArray(val)) {
+      return { arrayValue: { values: val.map((v) => this.toFirestoreValue(v)) } };
+    }
+    if (typeof val === 'object') {
+      const fields: Record<string, any> = {};
+      for (const [k, v] of Object.entries(val)) {
+        if (v !== undefined) fields[k] = this.toFirestoreValue(v);
+      }
+      return { mapValue: { fields } };
+    }
+    return { stringValue: String(val) };
+  }
+
+  private toFirestoreFields(obj: Record<string, any>): Record<string, any> {
+    const fields: Record<string, any> = {};
+    for (const [k, v] of Object.entries(obj)) {
+      if (v !== undefined) {
+        fields[k] = this.toFirestoreValue(v);
+      }
+    }
+    return fields;
+  }
+
+  public async flushToFirebase(): Promise<void> {
+    if (process.env.NODE_ENV === 'test' || process.env.VITEST) return;
+    this.ensureLoaded();
+    const currentKeys = new Set<string>();
+    const ops: Array<Promise<any>> = [];
+
+    for (const { key, collection } of COLLECTION_MAP) {
+      for (const item of this.state[key] as any[]) {
+        if (!item?.id) continue;
+        const docKey = `${collection}/${item.id}`;
+        currentKeys.add(docKey);
+        const serialized = JSON.stringify(item);
+        if (this.syncedJsonByKey.get(docKey) === serialized) continue;
+
+        const url = `${FIRESTORE_BASE}/${collection}/${encodeURIComponent(item.id)}?key=${FIREBASE_API_KEY}`;
+        ops.push(
+          fetch(url, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              fields: this.toFirestoreFields(item),
+            }),
+            signal: AbortSignal.timeout(6000),
+          })
+            .then((r) => {
+              if (r.ok) this.syncedJsonByKey.set(docKey, serialized);
+            })
+            .catch(() => undefined),
+        );
+      }
+    }
+
+    if (this.firebaseHydrated) {
+      for (const oldKey of Array.from(this.syncedJsonByKey.keys())) {
+        if (!currentKeys.has(oldKey)) {
+          const [collection, id] = oldKey.split('/');
+          const url = `${FIRESTORE_BASE}/${collection}/${encodeURIComponent(id)}?key=${FIREBASE_API_KEY}`;
+          ops.push(
+            fetch(url, { method: 'DELETE', signal: AbortSignal.timeout(6000) })
+              .then((r) => {
+                if (r.ok || r.status === 404) this.syncedJsonByKey.delete(oldKey);
+              })
+              .catch(() => undefined),
+          );
+        }
+      }
+    }
+
+    await Promise.all(ops);
+  }
+
+  private writeLocalCache(): void {
+    try {
+      fs.mkdirSync(path.dirname(STORE_PATH), { recursive: true });
+      fs.writeFileSync(STORE_PATH, JSON.stringify(this.state, null, 2), 'utf8');
+    } catch {
+      // ignore disk write issues in read-only envs
+    }
   }
 
   public getState(): PlatformStoreState {
@@ -445,16 +645,61 @@ class PlatformStore {
 
   public save(): void {
     this.ensureLoaded();
-    try {
-      fs.mkdirSync(path.dirname(STORE_PATH), { recursive: true });
-      fs.writeFileSync(STORE_PATH, JSON.stringify(this.state, null, 2), 'utf8');
-    } catch {
-      // ignore disk write issues in read-only test envs
-    }
+    this.writeLocalCache();
+    void this.flushToFirebase();
   }
 
   public hashPassword(password: string): string {
     return crypto.createHash('sha256').update(`nexora_salt::${password}`).digest('hex');
+  }
+
+  private parseFirestoreValue(val: any): any {
+    if (!val || typeof val !== 'object') return undefined;
+    if ('stringValue' in val) return val.stringValue;
+    if ('integerValue' in val) return Number(val.integerValue);
+    if ('doubleValue' in val) return Number(val.doubleValue);
+    if ('booleanValue' in val) return Boolean(val.booleanValue);
+    if ('timestampValue' in val) return val.timestampValue;
+    if ('nullValue' in val) return null;
+    if ('arrayValue' in val) {
+      return (val.arrayValue?.values || []).map((v: any) => this.parseFirestoreValue(v));
+    }
+    if ('mapValue' in val) {
+      const out: Record<string, any> = {};
+      for (const [k, v] of Object.entries(val.mapValue?.fields || {})) {
+        out[k] = this.parseFirestoreValue(v);
+      }
+      return out;
+    }
+    return undefined;
+  }
+
+  public async fetchFirestoreCollection(collectionName: string): Promise<Array<Record<string, any>>> {
+    const results: Array<Record<string, any>> = [];
+    try {
+      let pageToken = '';
+      do {
+        const url = `${FIRESTORE_BASE}/${collectionName}?pageSize=300&key=${FIREBASE_API_KEY}${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ''}`;
+        const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
+        if (!res.ok) break;
+        const json = (await res.json()) as {
+          documents?: Array<{ name: string; fields?: Record<string, any> }>;
+          nextPageToken?: string;
+        };
+        for (const doc of json.documents || []) {
+          const docId = doc.name?.split('/').pop() || '';
+          const row: Record<string, any> = { id: docId };
+          for (const [k, v] of Object.entries(doc.fields || {})) {
+            row[k] = this.parseFirestoreValue(v);
+          }
+          results.push(row);
+        }
+        pageToken = json.nextPageToken || '';
+      } while (pageToken);
+    } catch {
+      // non-fatal
+    }
+    return results;
   }
 }
 

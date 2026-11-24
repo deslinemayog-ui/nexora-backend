@@ -5,7 +5,7 @@ import {
   Message,
   MessageDirection,
   MessageType,
-} from '@prisma/client';
+} from '../../database/types';
 import { NexoraRepository } from '../../database/repository';
 import { OpenClawService } from '../../openclaw/openclaw.service';
 

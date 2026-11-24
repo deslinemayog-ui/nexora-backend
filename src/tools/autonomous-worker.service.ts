@@ -4,9 +4,10 @@ import fs from 'fs/promises';
 import path from 'path';
 import { platformStore } from '../modules/platform/platform.store';
 import { promisify } from 'util';
-import { AgentType } from '@prisma/client';
+import { AgentType } from '../database/types';
 import { logger } from '../utils/logger';
 import { sendApplicationEmailOnBehalfOfUser } from './email.service';
+import { downloadFromFirebaseStorage } from './firebase-storage.service';
 import { imapMonitorService } from './imap-monitor.service';
 import { jobSearchApiService } from './job-search-api.service';
 import { visaRelocationService } from './visa-relocation.service';
@@ -906,10 +907,12 @@ export class AutonomousWorkerService {
 
     const websiteUrl = primarySite?.url || 'https://nexora.ai';
 
-    const productPitch =
+    const rawPitch =
       primarySite?.metaDescription ||
-      primarySite?.textSnippet?.slice(0, 260) ||
-      params.allContextText.slice(0, 260);
+      primarySite?.textSnippet?.slice(0, 320) ||
+      params.allContextText.replace(/\*\*/g, '').replace(/`/g, '').replace(/\s+/g, ' ').trim();
+    const productPitch =
+      rawPitch.length > 340 ? `${rawPitch.slice(0, 340).replace(/\s+\S*$/, '')}...` : rawPitch;
 
     let emailsSentCount = 0;
     const maxSmtpEmailsPerRun =
@@ -946,7 +949,7 @@ export class AutonomousWorkerService {
           .filter((v) => v.status === 'PUBLISHED' && v.category === targetCategory)
           .filter((v) => {
             const org = pState.organisations.find((o) => o.id === v.organisationId);
-            if (org?.requireTranscript && !candidateHasTranscript) {
+            if ((v.requiresAssessment || org?.requireTranscript) && !candidateHasTranscript) {
               return false;
             }
             return true;
@@ -1277,13 +1280,20 @@ export class AutonomousWorkerService {
     // 2. Live SMTP email dispatch via Zoho SMTP (mrdocs@empiredigitals.org -> info@empiredigitals.org)
     if (shouldSendSmtp) {
       try {
-        const attachments: Array<{ filename: string; path: string }> = [];
+        const attachments: Array<{ filename: string; path?: string; content?: Buffer }> = [];
+        const documentLinks: Array<{ docType: string; label: string; fileName: string; url?: string }> = [];
 
         // For Job Applications, attach the candidate's CV PDF — do NOT attach a login-page screenshot to employers!
         if (generatedDocument?.filePath && generatedDocument.fileName) {
           attachments.push({
             filename: generatedDocument.fileName,
             path: generatedDocument.filePath,
+          });
+          documentLinks.push({
+            docType: agentType === AgentType.VISA_AGENT ? 'RELOCATION_DOSSIER' : 'PRIMARY_DOCUMENT',
+            label: generatedDocument.fileName,
+            fileName: generatedDocument.fileName,
+            url: generatedDocument.downloadUrl,
           });
         }
 
@@ -1306,6 +1316,42 @@ export class AutonomousWorkerService {
               attachments.push({ filename: doc.filename, path: doc.path });
             }
           }
+
+          // Also attach Supporting Documents (Passport, Permits, Certificates, CVs, IDs) from Firebase/store
+          const supportingDocs = platformStore
+            .getState()
+            .supportingDocuments.filter(
+              (d) =>
+                d.userUid === customerId &&
+                (d.agentType === agentType ||
+                  /PASSPORT|ID|PERMIT|CERTIFICATE|CV|TRANSCRIPT/i.test(d.docType)),
+            );
+          for (const sdoc of supportingDocs) {
+            documentLinks.push({
+              docType: sdoc.docType,
+              label: sdoc.label,
+              fileName: sdoc.fileName,
+              url: sdoc.downloadUrl,
+            });
+            if (!attachments.some((a) => a.filename === sdoc.fileName)) {
+              const cachePath = path.resolve(
+                process.cwd(),
+                'node_modules',
+                '.cache',
+                'nexora-documents',
+                sdoc.storedFileName,
+              );
+              const localBuf = await fs.readFile(cachePath).catch(() => null);
+              if (localBuf) {
+                attachments.push({ filename: sdoc.fileName, content: localBuf });
+              } else {
+                const remote = await downloadFromFirebaseStorage(`documents/${sdoc.storedFileName}`);
+                if (remote?.buffer) {
+                  attachments.push({ filename: sdoc.fileName, content: remote.buffer });
+                }
+              }
+            }
+          }
         }
 
         const emailResult = await sendApplicationEmailOnBehalfOfUser({
@@ -1314,11 +1360,13 @@ export class AutonomousWorkerService {
             target.contactEmail || 'portal-intake@' + new URL(target.portalUrl).hostname,
           platformName: target.name,
           platformCategory: target.category,
+          agentType,
           applicationUrl: target.applicationUrl,
           referenceId: receiptId,
           subject,
           plainTextBody: body,
           submittedFields: fields,
+          documentLinks: documentLinks.length > 0 ? documentLinks : undefined,
           attachments: attachments.length > 0 ? attachments : undefined,
         });
 

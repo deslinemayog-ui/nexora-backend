@@ -172,8 +172,16 @@ export const InterviewsView: React.FC<InterviewsViewProps> = ({
                   }}
                 >
                   <div>
-                    <div className="text-sm font-bold text-white">
-                      {item.jobTitle} — {item.companyName}
+                    <div className="text-sm font-bold text-white flex items-center gap-2 flex-wrap">
+                      <span>{item.jobTitle} — {item.companyName}</span>
+                      {item.status === 'INVITED' && (
+                        <span
+                          className="text-[11px] px-2.5 py-0.5 rounded-full font-bold"
+                          style={{ background: 'rgba(245,158,11,0.2)', color: '#fcd34d' }}
+                        >
+                          Invited — Accept to Auto-Apply
+                        </span>
+                      )}
                     </div>
                     <div className="text-xs text-slate-300 mt-1 flex items-center gap-2 flex-wrap">
                       <span className="inline-flex items-center gap-1">
@@ -188,6 +196,52 @@ export const InterviewsView: React.FC<InterviewsViewProps> = ({
                     <div className="text-xs text-cyan-300 mt-1">{item.locationOrLink}</div>
                     {item.instructions && (
                       <div className="text-[11px] text-slate-400 mt-1">{item.instructions}</div>
+                    )}
+                    {item.status === 'INVITED' && (
+                      <div className="flex items-center gap-2 flex-wrap mt-3">
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const res = await apiFetch(`/api/v1/interviews/${item.id}/respond`, {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ userUid, action: 'ACCEPT' }),
+                            });
+                            const json = await res.json().catch(() => null);
+                            if (json?.ok) {
+                              setInterviews((prev) =>
+                                prev.map((iv) =>
+                                  iv.id === item.id ? { ...iv, status: 'SCHEDULED', applicationId: json.data?.application?.id } : iv,
+                                ),
+                              );
+                            }
+                          }}
+                          className="chat-action-btn primary"
+                          style={{ fontSize: '12px', padding: '6px 12px' }}
+                        >
+                          Interested — Accept &amp; Auto-Apply
+                        </button>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const res = await apiFetch(`/api/v1/interviews/${item.id}/respond`, {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ userUid, action: 'DECLINE' }),
+                            });
+                            const json = await res.json().catch(() => null);
+                            if (json?.ok) {
+                              setInterviews((prev) =>
+                                prev.map((iv) => (iv.id === item.id ? { ...iv, status: 'CANCELLED' } : iv)),
+                              );
+                            }
+                          }}
+                          className="chat-action-btn"
+                          style={{ fontSize: '12px', padding: '6px 12px', color: '#fca5a5' }}
+                        >
+                          Decline
+                        </button>
+                      </div>
                     )}
                     <div className="flex items-center gap-2 flex-wrap mt-3">
                       {/^https?:\/\//i.test(item.locationOrLink || '') && (

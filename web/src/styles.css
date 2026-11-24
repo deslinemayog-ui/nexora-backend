@@ -1754,6 +1754,10 @@ button.bg-white\/5:hover {
 .cp-sidebar {
   width: 260px;
   flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
   background: #0f1623;
   border-right: 1px solid rgba(255, 255, 255, 0.08);
   display: flex;

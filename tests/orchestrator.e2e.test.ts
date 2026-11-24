@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ActionCategory, AgentType, ApprovalStatus, TaskStatus } from '@prisma/client';
+import { ActionCategory, AgentType, ApprovalStatus, TaskStatus } from '../src/database/types';
 import {
   ConnectionStateSnapshot,
   ConnectionUpdateHandler,

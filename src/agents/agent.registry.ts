@@ -1,4 +1,4 @@
-import { AgentType } from '@prisma/client';
+import { AgentType } from '../database/types';
 import { ISpecialistAgent } from './base.agent';
 import { BusinessDevelopmentAgent } from './business-agent/business.agent';
 import { EducationScholarshipAgent } from './education-agent/education.agent';

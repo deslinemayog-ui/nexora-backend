@@ -1,4 +1,4 @@
-import { AccountStatus, Customer, CustomerProfile } from '@prisma/client';
+import { AccountStatus, Customer, CustomerProfile } from '../../database/types';
 import { normalizeWhatsAppNumber, toWhatsAppJid } from '../../channels/whatsapp/whatsapp.events';
 import { NexoraRepository } from '../../database/repository';
 import { ForbiddenError } from '../../utils/errors';

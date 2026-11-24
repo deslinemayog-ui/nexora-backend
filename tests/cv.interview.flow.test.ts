@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { IntentDetector } from '../src/core/orchestrator/intent.detector';
 import { OpenClawService } from '../src/openclaw/openclaw.service';
-import { AgentType } from '@prisma/client';
+import { AgentType } from '../src/database/types';
 
 describe('CV Interview & Job Application Flow', () => {
   const detector = new IntentDetector();

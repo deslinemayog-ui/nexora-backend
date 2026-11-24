@@ -1,4 +1,4 @@
-import { ActionCategory, AgentType } from '@prisma/client';
+import { ActionCategory, AgentType } from '../../database/types';
 import { BaseSpecialistAgent, PlannedTaskTemplate } from '../base.agent';
 
 export interface VacancyRiskAssessment {

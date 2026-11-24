@@ -1,12 +1,13 @@
 import fs from 'fs/promises';
 import path from 'path';
 import pdfParse from 'pdf-parse';
-import { ActionCategory, AgentType, CustomerProfile, Project, Task } from '@prisma/client';
+import { ActionCategory, AgentType, CustomerProfile, Project, Task } from '../database/types';
 import { env } from '../config/env';
 import { OpenClawService } from '../openclaw/openclaw.service';
 import { ExecuteAgentTurnOutput } from '../openclaw/openclaw.types';
 import { autonomousWorkerService } from '../tools/autonomous-worker.service';
 import { documentGeneratorService, type GeneratedDocumentResult } from '../tools/document-generator.service';
+import { platformStore } from '../modules/platform/platform.store';
 import { logger } from '../utils/logger';
 
 export interface PlannedTaskTemplate {
@@ -108,7 +109,7 @@ export abstract class BaseSpecialistAgent implements ISpecialistAgent {
       [AgentType.VISA_AGENT]: {
         label: 'Relocation & Visa Pathway Dossier',
         requiredFields:
-          'Full Name, Email Address, Phone Number, Current Nationality/Location, Target Destination Country, Target Visa/Relocation Route (or Work/Study/Skilled Migration goal), Occupation/Qualifications, and Timeline/Family Details',
+          'Full Name, Email/Contact, Occupation/Qualifications, and Target Destination (or Global/Open Relocation Goal). Do NOT block submission waiting for optional family details or exact timeline if the user already uploaded a Relocation/CV PDF or Supporting Documents (Passport/CV).',
         template:
           '`# 🌍 RELOCATION & VISA PATHWAY DOSSIER — <Name>`, `## 🎯 Target Destination & Visa Route`, `## 👤 Applicant Profile & Eligibility`, `## 💼 Professional & Academic Credentials`, `## 📋 Recommended Visa Pathways & Requirements`, `## 🗓️ Step-by-Step Relocation Timeline`, and `## 📑 Supporting Documents Checklist`',
       },
@@ -165,6 +166,20 @@ export abstract class BaseSpecialistAgent implements ISpecialistAgent {
         ].join('\n')
       : '';
 
+    const supportingDocs = platformStore
+      .getState()
+      .supportingDocuments.filter(
+        (d) =>
+          d.userUid === context.customerId ||
+          (context.sessionKey && context.sessionKey.includes(d.userUid)),
+      );
+    const supportingDocsBlock =
+      supportingDocs.length > 0
+        ? `User's Uploaded Supporting Documents (ALREADY ON FILE — DO NOT ask for these again):\n${supportingDocs
+            .map((d) => `- ${d.docType}: ${d.label} (${d.fileName}) [${d.agentType}]`)
+            .join('\n')}`
+        : '';
+
     return [
       `You are the ${this.name} within the Nexora AI Autonomous Workforce Platform.`,
       `Role Description: ${this.description}`,
@@ -173,6 +188,7 @@ export abstract class BaseSpecialistAgent implements ISpecialistAgent {
       'DOMAIN RULES:',
       ...this.buildDomainRules().map((rule, idx) => `${idx + 1}. ${rule}`),
       `Customer Profile Summary: ${profileSummary || 'Auto-inferred from conversation'}`,
+      supportingDocsBlock,
       `Customer Memory Facts:\n${context.memoryContext}`,
       activeProjectBlock,
       activeTaskBlock,
@@ -194,17 +210,25 @@ export abstract class BaseSpecialistAgent implements ISpecialistAgent {
       return false;
     }
 
-    // 2. Explicit approval from the user ("Approve & Submit" button or confirmation reply)
-    const isExplicitApproval =
-      /\b(?:approved\.?\s*please\s+generate|approve\s*(?:&|and)\s*submit|looks\s+good,?\s*(?:search\s+and\s+)?apply|confirm\s*(?:&|and)\s*submit|submit\s+the\s+applications\s+now|yes,?\s*(?:submit|apply|send)|go\s+ahead\s+and\s+(?:apply|submit|send))\b/i.test(
-        lower,
+    // 2. Explicit approval from the user ("Approve & Submit" button or confirmation reply like "Yes" / "Yes sir")
+    const trimmedLower = lower.trim();
+    const isShortYes =
+      trimmedLower.length <= 40 &&
+      /^(?:yes|yeah|yep|yup|sure|ok|okay|please\s+do|proceed|go\s+ahead|submit|apply|do\s+it|confirm)\b/i.test(
+        trimmedLower,
       ) &&
+      !/\b(?:no|not|don'?t|wait|cancel|stop|later|change|edit|modify)\b/i.test(trimmedLower);
+    const isExplicitApproval =
+      (isShortYes ||
+        /\b(?:approved\.?\s*please\s+generate|approve\s*(?:&|and)\s*submit|looks\s+good,?\s*(?:search\s+and\s+)?apply|confirm\s*(?:&|and)\s*submit|submit\s+the\s+applications\s+now|yes,?\s*(?:submit|apply|send)|go\s+ahead\s+and\s+(?:apply|submit|send))\b/i.test(
+          lower,
+        )) &&
       !lower.includes("doesn't have a cv") &&
       !lower.includes('no cv') &&
       !lower.includes('interview me');
 
     if (isExplicitApproval) {
-      // Require that a deliverable was compiled in history, cached in session, or uploaded as PDF before dispatching
+      // Require that a deliverable was compiled in history, cached in session, or uploaded as PDF/Supporting Doc before dispatching
       if (
         this.agentType === AgentType.JOB_AGENT ||
         this.agentType === AgentType.VISA_AGENT ||
@@ -212,22 +236,28 @@ export abstract class BaseSpecialistAgent implements ISpecialistAgent {
         this.agentType === AgentType.EDUCATION_AGENT
       ) {
         const history = context?.conversationContext ?? [];
+        const hasSupportingDoc = platformStore
+          .getState()
+          .supportingDocuments.some((d) => d.userUid === context?.customerId);
         const hasCompiledOrUploadedDeliverable =
           Boolean(context?.sessionKey && latestDraftedDocBySession.has(context.sessionKey)) ||
           Boolean(context?.sessionKey && latestReviewedPdfBySession.has(context.sessionKey)) ||
+          hasSupportingDoc ||
           lower.includes('[approved pdf:') ||
           /\b(?:\[attached|curriculum vitae|\.pdf\b)\b/i.test(lower) ||
           history.some(
             (m) =>
-              m.role === 'assistant' &&
-              (m.content.includes('CURRICULUM VITAE') ||
-                m.content.includes('RELOCATION & VISA') ||
-                m.content.includes('INVESTOR PITCH') ||
-                m.content.includes('SCHOLARSHIP & ADMISSIONS') ||
-                m.content.includes('created your CV PDF') ||
-                m.content.includes('created your PDF') ||
-                (m.content.includes('Professional Summary') && m.content.includes('Education')) ||
-                m.content.includes('Ready for Live Job Search')),
+              (m.role === 'user' && /\.pdf\b|\[attached/i.test(m.content)) ||
+              (m.role === 'assistant' &&
+                (m.content.includes('CURRICULUM VITAE') ||
+                  m.content.includes('RELOCATION & VISA') ||
+                  m.content.includes('INVESTOR PITCH') ||
+                  m.content.includes('SCHOLARSHIP') ||
+                  m.content.includes('created your CV PDF') ||
+                  m.content.includes('created your PDF') ||
+                  (m.content.includes('Professional Summary') && m.content.includes('Education')) ||
+                  m.content.includes('Ready for Live Job Search') ||
+                  /should i submit your applications/i.test(m.content))),
           );
         return !hasCompiledOrUploadedDeliverable;
       }

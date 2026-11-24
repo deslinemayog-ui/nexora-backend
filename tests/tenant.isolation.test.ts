@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AgentType } from '@prisma/client';
+import { AgentType } from '../src/database/types';
 import { createNexoraApplication } from '../src/main';
 import { TenantIsolationError, ValidationError } from '../src/utils/errors';
 

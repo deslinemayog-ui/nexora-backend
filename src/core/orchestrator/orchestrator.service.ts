@@ -5,7 +5,7 @@ import {
   Project,
   Task,
   TaskStatus,
-} from '@prisma/client';
+} from '../../database/types';
 import { agentRegistry, SpecialistAgentRegistry } from '../../agents/agent.registry';
 import { ApprovalService } from '../../approvals/approval.service';
 import { WhatsAppService } from '../../channels/whatsapp/whatsapp.service';

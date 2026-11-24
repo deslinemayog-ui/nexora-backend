@@ -17,9 +17,6 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate deploy",
-    "prisma:migrate:dev": "prisma migrate dev",
     "preview:email": "tsx scripts/preview-email.ts"
   },
   "dependencies": {
@@ -31,7 +28,6 @@
     "@fastify/swagger": "^9.2.0",
     "@fastify/swagger-ui": "^5.0.1",
     "@hapi/boom": "^10.0.1",
-    "@prisma/client": "^6.1.0",
     "@types/nodemailer": "^8.0.2",
     "@whiskeysockets/baileys": "^6.7.9",
     "bullmq": "^5.30.0",
@@ -54,7 +50,6 @@
     "@types/qrcode-terminal": "^0.12.2",
     "@types/ws": "^8.5.13",
     "pnpm": "^9.15.0",
-    "prisma": "^6.1.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"

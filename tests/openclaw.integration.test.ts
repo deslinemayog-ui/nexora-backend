@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events';
 import { describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
-import { AgentType } from '@prisma/client';
+import { AgentType } from '../src/database/types';
 import { OpenClawGatewayClient } from '../src/openclaw/openclaw.client';
 import { OpenClawService } from '../src/openclaw/openclaw.service';
 import {

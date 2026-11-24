@@ -1,4 +1,4 @@
-import { CustomerMemory } from '@prisma/client';
+import { CustomerMemory } from '../database/types';
 import { NexoraRepository } from '../database/repository';
 import { scrubSensitiveText } from '../utils/logger';
 

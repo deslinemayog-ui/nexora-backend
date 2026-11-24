@@ -1,4 +1,4 @@
-import { Task, TaskStatus } from '@prisma/client';
+import { Task, TaskStatus } from '../database/types';
 import { NexoraRepository } from '../database/repository';
 import { QueueService } from '../queues/queue.service';
 import { AgentTaskJobPayload } from '../queues/queue.types';

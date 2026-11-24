@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
 import { OpenClawService } from '../openclaw/openclaw.service';
+import { uploadToFirebaseStorage } from '../tools/firebase-storage.service';
 import { AssessmentService } from '../modules/platform/assessment.service';
 import { PlatformService } from '../modules/platform/platform.service';
 import { platformStore } from '../modules/platform/platform.store';
@@ -202,12 +203,22 @@ export function registerPlatformRoutes(
 
   app.post('/api/v1/organisations/:id/verify', async (request, reply) => {
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
-    const body = z.object({ token: z.string().optional() }).parse(request.body ?? {});
+    const body = z.object({ token: z.string().min(1) }).parse(request.body ?? {});
     try {
       const org = platformService.verifyAndApproveOrganisation(params.id, body.token);
       return { ok: true, data: org };
     } catch (err: any) {
       return reply.status(400).send({ ok: false, error: err?.message || 'Verification failed' });
+    }
+  });
+
+  app.post('/api/v1/organisations/:id/resend-verification', async (request, reply) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    try {
+      const data = await platformService.resendOrganisationVerificationCode(params.id);
+      return { ok: true, data };
+    } catch (err: any) {
+      return reply.status(400).send({ ok: false, error: err?.message || 'Could not resend code' });
     }
   });
 
@@ -285,6 +296,17 @@ export function registerPlatformRoutes(
         passingScorePercent: z.number().int().min(10).max(100).default(70),
         assessmentDurationMin: z.number().int().min(5).max(120).default(25),
         applicationDeadline: z.string().optional(),
+        visaType: z.string().optional(),
+        targetCountry: z.string().optional(),
+        processingTime: z.string().optional(),
+        requiredDocuments: z.array(z.string()).optional(),
+        institutionName: z.string().optional(),
+        degreeLevel: z.string().optional(),
+        fundingCoverage: z.string().optional(),
+        minGpaOrScore: z.string().optional(),
+        investmentStage: z.string().optional(),
+        sectorFocus: z.string().optional(),
+        equityTerms: z.string().optional(),
         status: z.enum(['DRAFT', 'PUBLISHED', 'UNPUBLISHED', 'CLOSED']).default('PUBLISHED'),
       })
       .parse(request.body);
@@ -306,6 +328,19 @@ export function registerPlatformRoutes(
     } catch (err: any) {
       return reply.status(400).send({ ok: false, error: err?.message || 'Could not update vacancy' });
     }
+  });
+
+  app.delete('/api/v1/organisations/:id/vacancies/:vacancyId', async (request) => {
+    const params = z.object({ id: z.string().min(1), vacancyId: z.string().min(1) }).parse(request.params);
+    const removed = platformService.deleteVacancies(params.id, [params.vacancyId]);
+    return { ok: true, removed };
+  });
+
+  app.post('/api/v1/organisations/:id/vacancies/bulk-delete', async (request) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const body = z.object({ vacancyIds: z.array(z.string().min(1)) }).parse(request.body);
+    const removed = platformService.deleteVacancies(params.id, body.vacancyIds);
+    return { ok: true, removed };
   });
 
   // ==================== APPLICATIONS & AUTHORISED CANDIDATES ====================
@@ -408,6 +443,74 @@ export function registerPlatformRoutes(
     };
   });
 
+  app.get('/api/v1/organisations/:id/vacancies/:vacancyId/matching-candidates', async (request, reply) => {
+    const params = z.object({ id: z.string().min(1), vacancyId: z.string().min(1) }).parse(request.params);
+    try {
+      const data = await platformService.getMatchingCandidatesForVacancy(params.id, params.vacancyId);
+      return { ok: true, data };
+    } catch (err: any) {
+      return reply.status(400).send({ ok: false, error: err?.message || 'Could not match candidates' });
+    }
+  });
+
+  app.post('/api/v1/organisations/:id/vacancies/:vacancyId/auto-apply-candidate', async (request, reply) => {
+    const params = z.object({ id: z.string().min(1), vacancyId: z.string().min(1) }).parse(request.params);
+    const body = z
+      .object({
+        userUid: z.string().min(1),
+        customerId: z.string().optional(),
+        candidateName: z.string().min(1),
+        candidateEmail: z.string().min(3),
+      })
+      .parse(request.body);
+    try {
+      const data = await platformService.autoApplyMatchedCandidate(params.id, params.vacancyId, body);
+      return { ok: true, data };
+    } catch (err: any) {
+      return reply.status(400).send({ ok: false, error: err?.message || 'Auto-apply failed' });
+    }
+  });
+
+  app.post('/api/v1/organisations/:id/vacancies/:vacancyId/invite-interview', async (request, reply) => {
+    const params = z.object({ id: z.string().min(1), vacancyId: z.string().min(1) }).parse(request.params);
+    const body = z
+      .object({
+        userUid: z.string().min(1),
+        customerId: z.string().optional(),
+        candidateName: z.string().min(1),
+        candidateEmail: z.string().min(3),
+        interviewDate: z.string().min(4),
+        interviewTime: z.string().min(2),
+        timezone: z.string().optional(),
+        interviewType: z.enum(['ONLINE', 'TELEPHONE', 'IN_PERSON']).optional(),
+        locationOrLink: z.string().min(2),
+        instructions: z.string().optional(),
+      })
+      .parse(request.body);
+    try {
+      const data = await platformService.inviteMatchedCandidateToInterview(params.id, params.vacancyId, body);
+      return { ok: true, data };
+    } catch (err: any) {
+      return reply.status(400).send({ ok: false, error: err?.message || 'Invite failed' });
+    }
+  });
+
+  app.post('/api/v1/interviews/:interviewId/respond', async (request, reply) => {
+    const params = z.object({ interviewId: z.string().min(1) }).parse(request.params);
+    const body = z
+      .object({
+        userUid: z.string().min(1),
+        action: z.enum(['ACCEPT', 'DECLINE']),
+      })
+      .parse(request.body);
+    try {
+      const data = await platformService.respondToInterviewInvitation(params.interviewId, body.userUid, body.action);
+      return { ok: true, data };
+    } catch (err: any) {
+      return reply.status(400).send({ ok: false, error: err?.message || 'Could not respond to invitation' });
+    }
+  });
+
   // ==================== INTERVIEWS MODULE ====================
   app.get('/api/v1/interviews', async (request) => {
     const q = z
@@ -473,6 +576,18 @@ export function registerPlatformRoutes(
     }
   });
 
+  app.post('/api/v1/organisations/:id/interviews/:interviewId/ai-questions', async (request, reply) => {
+    const params = z
+      .object({ id: z.string().min(1), interviewId: z.string().min(1) })
+      .parse(request.params);
+    try {
+      const notes = await platformService.generateAiInterviewQuestions(params.id, params.interviewId);
+      return { ok: true, data: { interviewerNotes: notes } };
+    } catch (err: any) {
+      return reply.status(400).send({ ok: false, error: err?.message || 'Could not generate questions' });
+    }
+  });
+
   // ==================== EMPLOYER AI & STAFFING (PHASE 4 & 5) ====================
   app.post('/api/v1/organisations/:id/ai', async (request) => {
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
@@ -519,6 +634,42 @@ export function registerPlatformRoutes(
       return { ok: true, data };
     } catch (err: any) {
       return reply.status(400).send({ ok: false, error: err?.message || 'Placement creation failed' });
+    }
+  });
+
+  app.post('/api/v1/organisations/:id/placements/:placementId/salary', async (request, reply) => {
+    const params = z
+      .object({ id: z.string().min(1), placementId: z.string().min(1) })
+      .parse(request.params);
+    const body = z.object({ monthlyCtcUsd: z.number().min(0) }).parse(request.body);
+    try {
+      const data = await platformService.updatePlacementSalary(
+        params.id,
+        params.placementId,
+        body.monthlyCtcUsd,
+      );
+      return { ok: true, data };
+    } catch (err: any) {
+      return reply.status(400).send({ ok: false, error: err?.message || 'Could not update salary' });
+    }
+  });
+
+  app.post('/api/v1/organisations/:id/placements/:placementId/status', async (request, reply) => {
+    const params = z
+      .object({ id: z.string().min(1), placementId: z.string().min(1) })
+      .parse(request.params);
+    const body = z
+      .object({ onboardingStatus: z.enum(['ONBOARDING', 'ACTIVE', 'COMPLETED', 'TERMINATED']) })
+      .parse(request.body);
+    try {
+      const data = platformService.updatePlacementStatus(
+        params.id,
+        params.placementId,
+        body.onboardingStatus,
+      );
+      return { ok: true, data };
+    } catch (err: any) {
+      return reply.status(400).send({ ok: false, error: err?.message || 'Could not update status' });
     }
   });
 
@@ -605,10 +756,19 @@ export function registerPlatformRoutes(
 
     const safeOriginal = path.basename(body.fileName).replace(/[^a-zA-Z0-9._-]/g, '_');
     const storedFileName = `sup_${Date.now()}_${safeOriginal}`;
+    const buffer = Buffer.from(body.contentBase64, 'base64');
+
+    // Primary cloud storage: Firebase Storage
+    const firebaseUrl = await uploadToFirebaseStorage(
+      `documents/${storedFileName}`,
+      buffer,
+      body.mimeType,
+    );
+
+    // Local fast cache fallback
     const cacheDir = path.resolve(process.cwd(), 'node_modules', '.cache', 'nexora-documents');
     await fs.mkdir(cacheDir, { recursive: true });
-    const buffer = Buffer.from(body.contentBase64, 'base64');
-    await fs.writeFile(path.join(cacheDir, storedFileName), buffer);
+    await fs.writeFile(path.join(cacheDir, storedFileName), buffer).catch(() => undefined);
 
     const record = {
       id: `sdoc-${crypto.randomUUID().slice(0, 10)}`,
@@ -620,7 +780,7 @@ export function registerPlatformRoutes(
       storedFileName,
       mimeType: body.mimeType,
       fileSizeBytes: buffer.length,
-      downloadUrl: `/api/v1/documents/download/${encodeURIComponent(storedFileName)}`,
+      downloadUrl: firebaseUrl || `/api/v1/documents/download/${encodeURIComponent(storedFileName)}`,
       createdAt: new Date().toISOString(),
     };
     const state = platformStore.getState();
@@ -716,6 +876,29 @@ export function registerPlatformRoutes(
     }
   });
 
+  app.post('/api/v1/organisations/:id/invoices/paystack/initialize-all', async (request, reply) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const body = z.object({ callbackUrl: z.string().optional() }).parse(request.body ?? {});
+    try {
+      const data = await platformService.initializeBulkInvoicesPaystack(params.id, body.callbackUrl);
+      return { ok: true, data };
+    } catch (err: any) {
+      return reply.status(400).send({ ok: false, error: err?.message || 'Paystack init failed' });
+    }
+  });
+
+  app.get('/api/v1/organisations/:id/invoices/paystack/verify-all/:reference', async (request, reply) => {
+    const params = z
+      .object({ id: z.string().min(1), reference: z.string().min(1) })
+      .parse(request.params);
+    try {
+      const data = await platformService.verifyBulkInvoicesPaystack(params.id, params.reference);
+      return { ok: true, data };
+    } catch (err: any) {
+      return reply.status(400).send({ ok: false, error: err?.message || 'Paystack verification failed' });
+    }
+  });
+
   // ==================== COMPANY TEAM / APP USERS ====================
   app.get('/api/v1/organisations/:id/users', async (request) => {
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
@@ -761,4 +944,10 @@ export function registerPlatformRoutes(
     platformService.removeOrganisationUser(params.id, params.userId);
     return { ok: true };
   });
+
+  // Zero-touch automated monthly 10% CTC billing cycle
+  if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
+    setTimeout(() => void platformService.runAutomatedMonthlyBillingCycle(), 15_000);
+    setInterval(() => void platformService.runAutomatedMonthlyBillingCycle(), 6 * 60 * 60 * 1000);
+  }
 }

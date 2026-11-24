@@ -1,4 +1,4 @@
-import { Notification, NotificationStatus } from '@prisma/client';
+import { Notification, NotificationStatus } from '../database/types';
 import { WhatsAppService } from '../channels/whatsapp/whatsapp.service';
 import { NexoraRepository } from '../database/repository';
 import { logger } from '../utils/logger';

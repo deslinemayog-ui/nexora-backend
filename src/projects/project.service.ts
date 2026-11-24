@@ -1,4 +1,4 @@
-import { AgentType, Priority, Project, ProjectStatus, Task, TaskStatus } from '@prisma/client';
+import { AgentType, Priority, Project, ProjectStatus, Task, TaskStatus } from '../database/types';
 import { agentRegistry } from '../agents/agent.registry';
 import { NexoraRepository } from '../database/repository';
 

@@ -34,7 +34,7 @@ import {
   SubscriptionTier,
   Task,
   TaskStatus,
-} from '@prisma/client';
+} from './types';
 import { assertTenantOwnership, PrismaService } from './prisma.service';
 import { NotFoundError, TenantIsolationError } from '../utils/errors';
 
@@ -73,11 +73,8 @@ export class NexoraRepository {
     this.useInMemory = enabled;
   }
 
-  private get db() {
-    if (!this.prisma) {
-      throw new Error('PrismaService not configured on NexoraRepository');
-    }
-    return this.prisma.client;
+  private get db(): any {
+    throw new Error('Prisma has been removed; NexoraRepository runs in embedded/Firebase mode.');
   }
 
   // ==========================================================================
@@ -114,7 +111,7 @@ export class NexoraRepository {
       }
 
       const periodEnd = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-      const created = await this.db.$transaction(async (tx) => {
+      const created = await this.db.$transaction(async (tx: any) => {
         const customer = await tx.customer.create({
           data: {
             whatsappNumber: params.whatsappNumber,
@@ -500,7 +497,7 @@ export class NexoraRepository {
     }>;
   }): Promise<{ project: Project; tasks: Task[] }> {
     if (!this.useInMemory) {
-      return this.db.$transaction(async (tx) => {
+      return this.db.$transaction(async (tx: any) => {
         const project = await tx.project.create({
           data: {
             customerId: params.customerId,
@@ -631,7 +628,7 @@ export class NexoraRepository {
         include: { tasks: { orderBy: { stepOrder: 'asc' } } },
         orderBy: { updatedAt: 'desc' },
       });
-      return rows.map(({ tasks, ...project }) => ({ project, tasks }));
+      return rows.map(({ tasks, ...project }: any) => ({ project, tasks }));
     }
 
     const customerProjects = Array.from(this.projects.values())
