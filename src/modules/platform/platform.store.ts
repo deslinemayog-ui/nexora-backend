@@ -1,5 +1,3 @@
-import fs from 'fs';
-import path from 'path';
 import crypto from 'crypto';
 
 export type OrganisationCategoryType =
@@ -244,6 +242,36 @@ export interface VacancyApplicationRecord {
   updatedAt: string;
 }
 
+export type InterviewProviderType = 'GOOGLE_LIVE' | 'NUANCE' | 'EXTERNAL';
+
+export const INTERVIEW_PROVIDER_RATES_USD: Record<InterviewProviderType, number> = {
+  GOOGLE_LIVE: 0.5,
+  NUANCE: 2.0,
+  EXTERNAL: 0,
+};
+
+export interface InterviewRecordingRecord {
+  id: string;
+  userUid: string;
+  interviewId?: string;
+  organisationId?: string;
+  companyName: string;
+  jobTitle: string;
+  interviewType: string;
+  interviewProvider: InterviewProviderType;
+  ratePerMinuteUsd: number;
+  durationSeconds: number;
+  billedMinutes: number;
+  billedAmountUsd: number;
+  hasVideo: boolean;
+  mimeType: string;
+  fileSizeBytes: number;
+  storagePath: string;
+  recordingUrl: string;
+  transcript: Array<{ speaker: 'ai' | 'user'; text: string; timestamp: string }>;
+  createdAt: string;
+}
+
 export interface InterviewRecord {
   id: string;
   organisationId: string;
@@ -259,11 +287,19 @@ export interface InterviewRecord {
   interviewTime: string;
   timezone: string;
   interviewType: 'ONLINE' | 'TELEPHONE' | 'IN_PERSON';
+  interviewProvider?: InterviewProviderType;
+  ratePerMinuteUsd?: number;
+  aiQuestions?: string;
   locationOrLink: string;
   instructions?: string;
   status: 'INVITED' | 'SCHEDULED' | 'RESCHEDULED' | 'COMPLETED' | 'CANCELLED';
   interviewerNotes?: string;
   candidateFeedback?: string;
+  recordedDurationSec?: number;
+  billedMinutes?: number;
+  billedAmountUsd?: number;
+  recordingId?: string;
+  recordingUrl?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -355,6 +391,9 @@ export interface MonthlyInvoiceRecord {
   placementId?: string;
   applicationId?: string;
   vacancyId?: string;
+  interviewId?: string;
+  interviewProvider?: InterviewProviderType;
+  billedMinutes?: number;
   vacancyTitle: string;
   category: string;
   candidateName: string;
@@ -395,6 +434,7 @@ export interface PlatformStoreState {
   transcripts: AssessmentTranscriptRecord[];
   applications: VacancyApplicationRecord[];
   interviews: InterviewRecord[];
+  interviewRecordings: InterviewRecordingRecord[];
   placements: PlacementRecord[];
   notifications: NotificationRecord[];
   documentAccessLogs: DocumentAccessLogRecord[];
@@ -402,7 +442,6 @@ export interface PlatformStoreState {
   invoices: MonthlyInvoiceRecord[];
 }
 
-const STORE_PATH = path.resolve(process.cwd(), 'node_modules', '.cache', 'nexora-platform-db.json');
 const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || 'nexora-d7346';
 const FIREBASE_API_KEY = process.env.FIREBASE_API_KEY || 'AIzaSyBjRi92-GpP71HcBUUXknw3vPhX3lSh7dk';
 const FIRESTORE_BASE = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/(default)/documents`;
@@ -416,6 +455,7 @@ const COLLECTION_MAP: Array<{ key: keyof PlatformStoreState; collection: string 
   { key: 'transcripts', collection: 'nexora_assessment_transcripts' },
   { key: 'applications', collection: 'nexora_applications' },
   { key: 'interviews', collection: 'nexora_interviews' },
+  { key: 'interviewRecordings', collection: 'nexora_interview_recordings' },
   { key: 'placements', collection: 'nexora_placements' },
   { key: 'notifications', collection: 'nexora_notifications' },
   { key: 'documentAccessLogs', collection: 'nexora_doc_access_logs' },
@@ -432,6 +472,7 @@ const EMPTY_STATE: PlatformStoreState = {
   transcripts: [],
   applications: [],
   interviews: [],
+  interviewRecordings: [],
   placements: [],
   notifications: [],
   documentAccessLogs: [],
@@ -449,29 +490,22 @@ class PlatformStore {
   private ensureLoaded(): void {
     if (this.loaded) return;
     this.loaded = true;
-    try {
-      if (fs.existsSync(STORE_PATH)) {
-        const raw = fs.readFileSync(STORE_PATH, 'utf8');
-        const parsed = JSON.parse(raw) as Partial<PlatformStoreState>;
-        this.state = {
-          organisations: parsed.organisations ?? [],
-          organisationUsers: parsed.organisationUsers ?? [],
-          vacancies: parsed.vacancies ?? [],
-          assignments: parsed.assignments ?? [],
-          sessions: parsed.sessions ?? [],
-          transcripts: parsed.transcripts ?? [],
-          applications: parsed.applications ?? [],
-          interviews: parsed.interviews ?? [],
-          placements: parsed.placements ?? [],
-          notifications: parsed.notifications ?? [],
-          documentAccessLogs: parsed.documentAccessLogs ?? [],
-          supportingDocuments: parsed.supportingDocuments ?? [],
-          invoices: parsed.invoices ?? [],
-        };
-      }
-    } catch {
-      this.state = { ...EMPTY_STATE };
-    }
+    this.state = {
+      organisations: [],
+      organisationUsers: [],
+      vacancies: [],
+      assignments: [],
+      sessions: [],
+      transcripts: [],
+      applications: [],
+      interviews: [],
+      interviewRecordings: [],
+      placements: [],
+      notifications: [],
+      documentAccessLogs: [],
+      supportingDocuments: [],
+      invoices: [],
+    };
     if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
       void this.syncFromFirebase();
     }
@@ -483,11 +517,15 @@ class PlatformStore {
       try {
         for (const { key, collection } of COLLECTION_MAP) {
           const items: any[] = [];
+          let fetchedOk = true;
           let pageToken = '';
           do {
             const url = `${FIRESTORE_BASE}/${collection}?pageSize=300&key=${FIREBASE_API_KEY}${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ''}`;
             const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
-            if (!res.ok) break;
+            if (!res.ok) {
+              fetchedOk = false;
+              break;
+            }
             const json = (await res.json()) as {
               documents?: Array<{ name: string; fields?: Record<string, any> }>;
               nextPageToken?: string;
@@ -523,16 +561,16 @@ class PlatformStore {
             pageToken = json.nextPageToken || '';
           } while (pageToken);
 
-          if (items.length > 0) {
-            // Merge Firebase items with any unsynced local items (Firebase takes precedence for same ID)
-            const byId = new Map<string, any>();
-            for (const localItem of this.state[key] as any[]) {
-              if (localItem?.id) byId.set(localItem.id, localItem);
+          if (fetchedOk) {
+            // Firebase is the authoritative source of truth — replace local cache so
+            // documents deleted in Firebase Console are never resurrected from disk cache.
+            const remoteIds = new Set(items.map((r) => `${collection}/${r.id}`));
+            for (const existingKey of Array.from(this.syncedJsonByKey.keys())) {
+              if (existingKey.startsWith(`${collection}/`) && !remoteIds.has(existingKey)) {
+                this.syncedJsonByKey.delete(existingKey);
+              }
             }
-            for (const remoteItem of items) {
-              if (remoteItem?.id) byId.set(remoteItem.id, remoteItem);
-            }
-            (this.state[key] as any[]) = Array.from(byId.values()).sort((a, b) =>
+            (this.state[key] as any[]) = items.sort((a, b) =>
               String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || '')),
             );
           }
@@ -630,12 +668,7 @@ class PlatformStore {
   }
 
   private writeLocalCache(): void {
-    try {
-      fs.mkdirSync(path.dirname(STORE_PATH), { recursive: true });
-      fs.writeFileSync(STORE_PATH, JSON.stringify(this.state, null, 2), 'utf8');
-    } catch {
-      // ignore disk write issues in read-only envs
-    }
+    // Disabled: Firebase Firestore is the sole persistent database (no local JSON cache resurrection).
   }
 
   public getState(): PlatformStoreState {

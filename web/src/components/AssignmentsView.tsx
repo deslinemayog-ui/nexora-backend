@@ -74,6 +74,7 @@ export const AssignmentsView: React.FC<AssignmentsViewProps> = ({
   const [resultData, setResultData] = useState<any | null>(null);
   const [startingSession, setStartingSession] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [showSubmitConfirm, setShowSubmitConfirm] = useState(false);
 
   const loadData = async () => {
     setLoading(true);
@@ -781,12 +782,86 @@ export const AssignmentsView: React.FC<AssignmentsViewProps> = ({
               ) : null}
               <button
                 type="button"
-                onClick={() => void handleSubmitAssessment()}
+                onClick={() => setShowSubmitConfirm(true)}
                 disabled={submitting}
                 className="chat-action-btn primary"
               >
                 <CheckCircle2 className="w-4 h-4" />
                 <span>{submitting ? 'Submitting...' : 'Submit Assessment'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showSubmitConfirm && session && (
+        <div
+          className="auth-modal-overlay"
+          onClick={() => !submitting && setShowSubmitConfirm(false)}
+          style={{ zIndex: 1200 }}
+        >
+          <div
+            className="auth-modal-card"
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: '420px', padding: '24px' }}
+          >
+            <h3 className="font-bold text-base text-white" style={{ margin: '0 0 10px 0' }}>
+              Confirm Assessment Submission
+            </h3>
+            {(() => {
+              const totalQ = session.questions?.length || 0;
+              const answeredQ = Object.keys(answers).length;
+              const unansweredQ = Math.max(0, totalQ - answeredQ);
+              return (
+                <>
+                  <p className="text-sm text-slate-300" style={{ lineHeight: 1.5, marginBottom: '12px' }}>
+                    You have answered <strong className="text-white">{answeredQ} of {totalQ}</strong> question(s)
+                    {remainingSec > 0 ? ` with ${formatTimer(remainingSec)} remaining` : ''}. Once submitted, your answers are final and your Verified Assessment Transcript will be generated.
+                  </p>
+                  {unansweredQ > 0 && (
+                    <div
+                      style={{
+                        padding: '8px 10px',
+                        borderRadius: '8px',
+                        background: 'rgba(245, 158, 11, 0.14)',
+                        border: '1px solid rgba(245, 158, 11, 0.35)',
+                        color: '#fde68a',
+                        fontSize: '12px',
+                        marginBottom: '16px',
+                      }}
+                    >
+                      ⚠️ You still have <strong>{unansweredQ} unanswered question(s)</strong>. Are you sure you want to submit now?
+                    </div>
+                  )}
+                </>
+              );
+            })()}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+              <button
+                type="button"
+                disabled={submitting}
+                onClick={() => setShowSubmitConfirm(false)}
+                className="chat-action-btn"
+                style={{ padding: '8px 14px' }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={submitting}
+                onClick={() => {
+                  setShowSubmitConfirm(false);
+                  void handleSubmitAssessment();
+                }}
+                className="chat-action-btn primary"
+                style={{
+                  padding: '8px 16px',
+                  background: '#059669',
+                  borderColor: '#10b981',
+                  color: '#ffffff',
+                }}
+              >
+                {submitting ? 'Submitting...' : 'Confirm & Submit'}
               </button>
             </div>
           </div>

@@ -152,6 +152,8 @@ export const CompanyPortal: React.FC<CompanyPortalProps> = ({ pathname, onNaviga
   const [interviewModalApp, setInterviewModalApp] = useState<any>(null);
   const [interviewForm, setInterviewForm] = useState({
     interviewType: 'ONLINE',
+    interviewProvider: 'GOOGLE_LIVE' as 'GOOGLE_LIVE' | 'NUANCE' | 'EXTERNAL',
+    aiQuestions: '',
     interviewDate: new Date(Date.now() + 86400000).toISOString().slice(0, 10),
     interviewTime: '10:00',
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Africa/Johannesburg',
@@ -201,7 +203,9 @@ export const CompanyPortal: React.FC<CompanyPortalProps> = ({ pathname, onNaviga
     interviewDate: new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10),
     interviewTime: '10:00',
     interviewType: 'ONLINE' as 'ONLINE' | 'TELEPHONE' | 'IN_PERSON',
-    locationOrLink: 'https://meet.google.com/new',
+    interviewProvider: 'GOOGLE_LIVE' as 'GOOGLE_LIVE' | 'NUANCE' | 'EXTERNAL',
+    aiQuestions: '',
+    locationOrLink: '',
     instructions: 'We found your Nexora AI profile a strong match. Accept this invite to auto-apply and confirm your slot.',
   });
   const [inviteBusy, setInviteBusy] = useState(false);
@@ -516,7 +520,15 @@ export const CompanyPortal: React.FC<CompanyPortalProps> = ({ pathname, onNaviga
         interviewTime: interviewForm.interviewTime,
         timezone: interviewForm.timezone || 'Africa/Johannesburg',
         interviewType: interviewForm.interviewType,
-        locationOrLink: interviewForm.locationOrLink || 'Provided by organisation',
+        interviewProvider: interviewForm.interviewType === 'ONLINE' ? interviewForm.interviewProvider : 'EXTERNAL',
+        aiQuestions:
+          interviewForm.interviewType === 'ONLINE' && interviewForm.interviewProvider !== 'EXTERNAL'
+            ? interviewForm.aiQuestions.trim()
+            : undefined,
+        locationOrLink:
+          interviewForm.interviewType === 'ONLINE' && interviewForm.interviewProvider !== 'EXTERNAL'
+            ? undefined
+            : interviewForm.locationOrLink || 'Provided by organisation',
         instructions: interviewForm.instructions || undefined,
       }),
     });
@@ -2465,14 +2477,41 @@ export const CompanyPortal: React.FC<CompanyPortalProps> = ({ pathname, onNaviga
                                   <option value="IN_PERSON">In Person</option>
                                 </select>
                               </div>
-                              <input
-                                required
-                                placeholder="Meeting link or address"
-                                value={inviteForm.locationOrLink}
-                                onChange={(e) => setInviteForm({ ...inviteForm, locationOrLink: e.target.value })}
+                              <select
+                                value={inviteForm.interviewProvider}
+                                onChange={(e) =>
+                                  setInviteForm({
+                                    ...inviteForm,
+                                    interviewProvider: e.target.value as 'GOOGLE_LIVE' | 'NUANCE' | 'EXTERNAL',
+                                  })
+                                }
                                 className="auth-input"
                                 style={{ fontSize: '12px' }}
-                              />
+                              >
+                                <option value="GOOGLE_LIVE">Google Live AI — $0.50/min (Monthly Invoice)</option>
+                                <option value="NUANCE">Nuance AI Video Persona — $2.00/min (Monthly Invoice)</option>
+                                <option value="EXTERNAL">Own / External Meeting Link — Free</option>
+                              </select>
+                              {(inviteForm.interviewType !== 'ONLINE' || inviteForm.interviewProvider === 'EXTERNAL') ? (
+                                <input
+                                  required
+                                  placeholder="Meeting link or address"
+                                  value={inviteForm.locationOrLink}
+                                  onChange={(e) => setInviteForm({ ...inviteForm, locationOrLink: e.target.value })}
+                                  className="auth-input"
+                                  style={{ fontSize: '12px' }}
+                                />
+                              ) : (
+                                <textarea
+                                  required
+                                  rows={3}
+                                  placeholder="Enter the interview questions the AI interviewer must ask (one per line) *"
+                                  value={inviteForm.aiQuestions}
+                                  onChange={(e) => setInviteForm({ ...inviteForm, aiQuestions: e.target.value })}
+                                  className="auth-input"
+                                  style={{ fontSize: '12px' }}
+                                />
+                              )}
                               <input
                                 placeholder="Message / instructions for candidate"
                                 value={inviteForm.instructions}
@@ -2515,6 +2554,29 @@ export const CompanyPortal: React.FC<CompanyPortalProps> = ({ pathname, onNaviga
                           className="text-[11px] px-2.5 py-0.5 rounded-full font-bold"
                           style={{
                             background:
+                              iv.interviewProvider === 'NUANCE'
+                                ? 'rgba(168,85,247,0.22)'
+                                : iv.interviewProvider === 'GOOGLE_LIVE'
+                                  ? 'rgba(16,185,129,0.22)'
+                                  : 'rgba(100,116,139,0.22)',
+                            color:
+                              iv.interviewProvider === 'NUANCE'
+                                ? '#d8b4fe'
+                                : iv.interviewProvider === 'GOOGLE_LIVE'
+                                  ? '#6ee7b7'
+                                  : '#cbd5e1',
+                          }}
+                        >
+                          {iv.interviewProvider === 'NUANCE'
+                            ? 'Nuance AI • $2.00/min'
+                            : iv.interviewProvider === 'GOOGLE_LIVE'
+                              ? 'Google Live • $0.50/min'
+                              : 'External • Free'}
+                        </span>
+                        <span
+                          className="text-[11px] px-2.5 py-0.5 rounded-full font-bold"
+                          style={{
+                            background:
                               iv.status === 'CANCELLED'
                                 ? 'rgba(239,68,68,0.2)'
                                 : iv.status === 'COMPLETED'
@@ -2533,10 +2595,27 @@ export const CompanyPortal: React.FC<CompanyPortalProps> = ({ pathname, onNaviga
                       </div>
                       <div className="text-xs text-slate-400 mt-1">
                         {iv.interviewType} • {iv.interviewDate} at {iv.interviewTime} ({iv.timezone}) • {iv.locationOrLink}
+                        {iv.billedMinutes ? (
+                          <span style={{ color: '#fbbf24', fontWeight: 600 }}>
+                            {' '}• Recorded {iv.billedMinutes} min (${Number(iv.billedAmountUsd || 0).toFixed(2)} on monthly invoice)
+                          </span>
+                        ) : null}
                       </div>
                     </div>
 
                     <div className="flex items-center gap-2 flex-wrap">
+                      {iv.recordingUrl && (
+                        <a
+                          href={iv.recordingUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="chat-action-btn primary"
+                          style={{ textDecoration: 'none' }}
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                          <span>Watch Recording</span>
+                        </a>
+                      )}
                       {/^https?:\/\//i.test(iv.locationOrLink || '') && (
                         <a
                           href={iv.locationOrLink}
@@ -3640,6 +3719,71 @@ export const CompanyPortal: React.FC<CompanyPortalProps> = ({ pathname, onNaviga
               <option value="TELEPHONE">Telephone</option>
               <option value="IN_PERSON">In-Person</option>
             </select>
+
+            {interviewForm.interviewType === 'ONLINE' && (
+              <div className="grid gap-2">
+                <div className="text-xs font-bold text-slate-300">
+                  Meeting Engine (billed on your monthly invoice)
+                </div>
+                {(
+                  [
+                    {
+                      id: 'GOOGLE_LIVE',
+                      title: 'Google Live AI Interview',
+                      price: '$0.50 / min',
+                      desc: 'Real-time voice & webcam AI interviewer + auto-saved Firebase recording & transcript.',
+                    },
+                    {
+                      id: 'NUANCE',
+                      title: 'Nuance AI Video Persona',
+                      price: '$2.00 / min',
+                      desc: 'Photorealistic full-duplex AI video interviewer + auto-saved Firebase recording.',
+                    },
+                    {
+                      id: 'EXTERNAL',
+                      title: 'Own / External Meeting Link',
+                      price: 'Free',
+                      desc: 'Use your own Google Meet, Zoom, Microsoft Teams, or Jitsi link.',
+                    },
+                  ] as const
+                ).map((opt) => {
+                  const selected = interviewForm.interviewProvider === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => setInterviewForm({ ...interviewForm, interviewProvider: opt.id })}
+                      style={{
+                        textAlign: 'left',
+                        padding: '10px 12px',
+                        borderRadius: '10px',
+                        background: selected ? 'rgba(16, 185, 129, 0.14)' : '#18181b',
+                        border: selected ? '1px solid #10b981' : '1px solid #2e2e2e',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-bold text-white">{opt.title}</span>
+                        <span
+                          style={{
+                            fontSize: '11px',
+                            fontWeight: 800,
+                            padding: '2px 8px',
+                            borderRadius: '999px',
+                            background: opt.id === 'EXTERNAL' ? 'rgba(100,116,139,0.25)' : 'rgba(16,185,129,0.22)',
+                            color: opt.id === 'EXTERNAL' ? '#cbd5e1' : '#6ee7b7',
+                          }}
+                        >
+                          {opt.price}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '3px' }}>{opt.desc}</div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
             <div className="grid grid-cols-2 gap-3">
               <input
                 required
@@ -3667,37 +3811,69 @@ export const CompanyPortal: React.FC<CompanyPortalProps> = ({ pathname, onNaviga
               <option value="America/New_York">America/New_York (EST/EDT)</option>
               <option value="Asia/Dubai">Asia/Dubai (GST)</option>
             </select>
-            <div className="flex gap-2">
-              <input
-                required
-                placeholder={
-                  interviewForm.interviewType === 'ONLINE'
-                    ? 'Meeting Link (Google Meet / Zoom / Teams / Jitsi) *'
-                    : interviewForm.interviewType === 'TELEPHONE'
-                      ? 'Telephone Number *'
-                      : 'Office Street Address *'
-                }
-                value={interviewForm.locationOrLink}
-                onChange={(e) => setInterviewForm({ ...interviewForm, locationOrLink: e.target.value })}
-                className="auth-input"
-                style={{ flex: 1 }}
-              />
-              {interviewForm.interviewType === 'ONLINE' && (
-                <button
-                  type="button"
-                  onClick={() =>
-                    setInterviewForm({
-                      ...interviewForm,
-                      locationOrLink: `https://meet.jit.si/nexora-interview-${Date.now().toString(36)}`,
-                    })
+            {(interviewForm.interviewType !== 'ONLINE' || interviewForm.interviewProvider === 'EXTERNAL') ? (
+              <div className="flex gap-2">
+                <input
+                  required
+                  placeholder={
+                    interviewForm.interviewType === 'ONLINE'
+                      ? 'Meeting Link (Google Meet / Zoom / Teams / Jitsi) *'
+                      : interviewForm.interviewType === 'TELEPHONE'
+                        ? 'Telephone Number *'
+                        : 'Office Street Address *'
                   }
-                  className="chat-action-btn"
-                  style={{ whiteSpace: 'nowrap' }}
+                  value={interviewForm.locationOrLink}
+                  onChange={(e) => setInterviewForm({ ...interviewForm, locationOrLink: e.target.value })}
+                  className="auth-input"
+                  style={{ flex: 1 }}
+                />
+                {interviewForm.interviewType === 'ONLINE' && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setInterviewForm({
+                        ...interviewForm,
+                        locationOrLink: `https://meet.jit.si/nexora-interview-${Date.now().toString(36)}`,
+                      })
+                    }
+                    className="chat-action-btn"
+                    style={{ whiteSpace: 'nowrap' }}
+                  >
+                    + Auto Meet Link
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="grid gap-2">
+                <label className="text-xs font-bold text-emerald-300">
+                  AI Interview Questions (Required — fed directly to{' '}
+                  {interviewForm.interviewProvider === 'NUANCE' ? 'Nuance AI' : 'Google Live AI'}) *
+                </label>
+                <textarea
+                  required
+                  rows={4}
+                  placeholder={
+                    '1. Walk me through a challenging production project you led.\n2. How do you handle tight deadlines and technical trade-offs?\n3. What excites you about this role?'
+                  }
+                  value={interviewForm.aiQuestions}
+                  onChange={(e) => setInterviewForm({ ...interviewForm, aiQuestions: e.target.value })}
+                  className="auth-input"
+                />
+                <div
+                  style={{
+                    padding: '9px 12px',
+                    borderRadius: '10px',
+                    background: 'rgba(16, 185, 129, 0.1)',
+                    border: '1px solid rgba(16, 185, 129, 0.3)',
+                    fontSize: '11.5px',
+                    color: '#a7f3d0',
+                  }}
                 >
-                  + Auto Meet Link
-                </button>
-              )}
-            </div>
+                  Nexora AI room is provisioned automatically. Recording saves to Firebase when the candidate ends the call, and usage (
+                  {interviewForm.interviewProvider === 'NUANCE' ? '$2.00/min' : '$0.50/min'}) is added to your monthly invoice.
+                </div>
+              </div>
+            )}
             <textarea
               rows={2}
               placeholder="Preparation instructions for candidate"

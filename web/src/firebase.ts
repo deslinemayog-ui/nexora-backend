@@ -84,9 +84,16 @@ function stripUndefinedDeep<T>(value: T): T {
   return value;
 }
 
-export async function syncFirebaseUserProfile(user: User): Promise<void> {
+export async function syncFirebaseUserProfile(
+  user: User,
+  isNewRegistration = false,
+): Promise<void> {
   try {
     const userRef = doc(db, 'users', user.uid);
+    const snap = await getDoc(userRef).catch(() => null);
+    const isFirstTimeUser = !snap?.exists();
+    const shouldGrantStarterCredit = isNewRegistration || isFirstTimeUser;
+    const hasExistingBalance = snap?.exists() && typeof snap.data()?.creditBalanceCents === 'number';
     await setDoc(
       userRef,
       stripUndefinedDeep({
@@ -94,7 +101,8 @@ export async function syncFirebaseUserProfile(user: User): Promise<void> {
         email: user.email || null,
         displayName: user.displayName || user.email?.split('@')[0] || 'Nexora User',
         photoURL: user.photoURL || null,
-        lastLoginAt: serverTimestamp(),
+        ...(shouldGrantStarterCredit && !hasExistingBalance ? { creditBalanceCents: 500 } : {}),
+        lastLoginAt: new Date().toISOString(),
       }),
       { merge: true },
     );
@@ -105,13 +113,13 @@ export async function syncFirebaseUserProfile(user: User): Promise<void> {
 
 export async function signInWithGoogle(): Promise<User> {
   const result = await signInWithPopup(auth, googleProvider);
-  await syncFirebaseUserProfile(result.user);
+  await syncFirebaseUserProfile(result.user, false);
   return result.user;
 }
 
 export async function loginWithEmail(email: string, pass: string): Promise<User> {
   const result = await signInWithEmailAndPassword(auth, email, pass);
-  await syncFirebaseUserProfile(result.user);
+  await syncFirebaseUserProfile(result.user, false);
   return result.user;
 }
 
@@ -120,7 +128,7 @@ export async function registerWithEmail(email: string, pass: string, displayName
   if (displayName && result.user) {
     await updateProfile(result.user, { displayName });
   }
-  await syncFirebaseUserProfile(result.user);
+  await syncFirebaseUserProfile(result.user, true);
   return result.user;
 }
 
@@ -138,37 +146,148 @@ export function subscribeToAuthChanges(callback: (user: User | null) => void): (
 }
 
 /**
- * Persist candidate dossier & CV metadata to Firebase Firestore
+ * Persist user info & per-agent prerequisites array directly under users/<userId>
+ * Schema: { uid, email, displayName, phone, location, creditBalanceCents, prerequisites: [{ type: 'JOB_AGENT', ... }, ...] }
  */
 export async function saveCandidateDossier(userId: string, dossier: CandidateDossier): Promise<void> {
   try {
     localStorage.setItem(`nexora_candidate_${userId}`, JSON.stringify(dossier));
   } catch {}
 
+  if (!userId || userId === 'guest-user') return;
   try {
-    const userDocRef = doc(db, 'candidates', userId);
-    // Remove large base64 from firestore document if > 500KB to stay within document limit
-    const cleanDossier = stripUndefinedDeep({ ...dossier });
-    if (cleanDossier.cvFileDataUrl && cleanDossier.cvFileDataUrl.length > 500000) {
-      delete cleanDossier.cvFileDataUrl;
-    }
-    await setDoc(userDocRef, { ...cleanDossier, updatedAt: serverTimestamp() }, { merge: true });
+    const userDocRef = doc(db, 'users', userId);
+    const pf = dossier.prereqFields || {};
+    const prerequisites = [
+      stripUndefinedDeep({
+        type: 'JOB_AGENT',
+        targetRole: dossier.targetRole || '',
+        portfolioUrl: dossier.portfolioUrl || '',
+        cvFileName: dossier.cvFileName || '',
+        cvFileSize: dossier.cvFileSize || 0,
+        notes: dossier.notes || pf.draftingNotes || '',
+      }),
+      stripUndefinedDeep({
+        type: 'VISA_AGENT',
+        nationality: pf.nationality || '',
+        relocationPurpose: pf.relocationPurpose || '',
+        targetLocation: dossier.location || '',
+      }),
+      stripUndefinedDeep({
+        type: 'EDUCATION_AGENT',
+        studyLevel: pf.studyLevel || '',
+        fieldOfStudy: pf.fieldOfStudy || '',
+      }),
+      stripUndefinedDeep({
+        type: 'INVESTOR_AGENT',
+        companyName: pf.companyName || '',
+        industry: pf.industry || '',
+        fundingStage: pf.fundingStage || '',
+        targetRaise: pf.targetRaise || '',
+        websiteUrl: pf.websiteUrl || '',
+      }),
+    ];
+
+    const existingSnap = await getDoc(userDocRef).catch(() => null);
+    const existingData = existingSnap?.exists() ? existingSnap.data() : {};
+    const creditBalanceCents =
+      typeof existingData?.creditBalanceCents === 'number' ? existingData.creditBalanceCents : 500;
+
+    // Write clean document without base64 blobs or duplicate profile/prereqFields keys
+    await setDoc(
+      userDocRef,
+      stripUndefinedDeep({
+        uid: userId,
+        email: dossier.email || existingData?.email || null,
+        displayName: dossier.fullName || existingData?.displayName || 'Nexora User',
+        phone: dossier.phone || '',
+        location: dossier.location || '',
+        photoURL: existingData?.photoURL ?? null,
+        creditBalanceCents,
+        prerequisites,
+        lastLoginAt:
+          typeof existingData?.lastLoginAt === 'string'
+            ? existingData.lastLoginAt
+            : new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }),
+    );
   } catch (err) {
-    console.error('Could not save candidate to Firestore:', err);
+    console.error('Could not save user profile & prerequisites to Firestore users:', err);
   }
 }
 
-/**
- * Load saved candidate dossier & form fields from Firestore (with localStorage fallback)
- */
-export async function loadCandidateDossier(userId: string): Promise<CandidateDossier | null> {
+export async function loadUserCreditBalance(userId: string): Promise<string | null> {
+  if (!userId || userId === 'guest-user') return null;
   try {
-    const snap = await getDoc(doc(db, 'candidates', userId));
+    const snap = await getDoc(doc(db, 'users', userId));
     if (snap.exists()) {
-      return snap.data() as CandidateDossier;
+      const raw = snap.data()?.creditBalanceCents;
+      if (typeof raw === 'number' && Number.isFinite(raw)) {
+        return (Math.max(0, raw) / 100).toFixed(2);
+      }
     }
   } catch (err) {
-    console.warn('Could not load candidate from Firestore (checking localStorage):', err);
+    console.warn('Could not load user credit balance from Firestore:', err);
+  }
+  return null;
+}
+
+export async function loadCandidateDossier(userId: string): Promise<CandidateDossier | null> {
+  if (userId && userId !== 'guest-user') {
+    try {
+      const userSnap = await getDoc(doc(db, 'users', userId));
+      if (userSnap.exists()) {
+        const data = userSnap.data() as any;
+        const prereqList: Array<Record<string, any>> = Array.isArray(data.prerequisites)
+          ? data.prerequisites
+          : [];
+        const jobP = prereqList.find((p) => p.type === 'JOB_AGENT') || {};
+        const visaP = prereqList.find((p) => p.type === 'VISA_AGENT') || {};
+        const eduP = prereqList.find((p) => p.type === 'EDUCATION_AGENT') || {};
+        const invP = prereqList.find((p) => p.type === 'INVESTOR_AGENT') || {};
+
+        const legacyProf = data.profile || {};
+        const legacyPf =
+          (!Array.isArray(data.prerequisites) ? data.prerequisites : null) || data.prereqFields || {};
+
+        const merged: CandidateDossier = {
+          fullName: data.displayName || legacyProf.fullName || data.fullName || '',
+          email: data.email || legacyProf.email || '',
+          phone: data.phone || legacyProf.phone || '',
+          location: data.location || visaP.targetLocation || legacyProf.location || '',
+          targetRole: jobP.targetRole || legacyProf.targetRole || data.targetRole || '',
+          portfolioUrl: jobP.portfolioUrl || legacyProf.portfolioUrl || data.portfolioUrl || '',
+          notes: jobP.notes || legacyProf.notes || data.notes || '',
+          cvFileName: jobP.cvFileName || legacyProf.cvFileName || data.cvFileName || undefined,
+          cvFileSize: jobP.cvFileSize || legacyProf.cvFileSize || data.cvFileSize || undefined,
+          prereqFields: {
+            nationality: visaP.nationality || legacyPf.nationality || '',
+            relocationPurpose: visaP.relocationPurpose || legacyPf.relocationPurpose || '',
+            studyLevel: eduP.studyLevel || legacyPf.studyLevel || '',
+            fieldOfStudy: eduP.fieldOfStudy || legacyPf.fieldOfStudy || '',
+            companyName: invP.companyName || legacyPf.companyName || '',
+            industry: invP.industry || legacyPf.industry || '',
+            fundingStage: invP.fundingStage || legacyPf.fundingStage || '',
+            targetRaise: invP.targetRaise || legacyPf.targetRaise || '',
+            websiteUrl: invP.websiteUrl || legacyPf.websiteUrl || '',
+            draftingNotes: jobP.notes || legacyPf.draftingNotes || '',
+          },
+        };
+        if (merged.fullName || merged.phone || merged.targetRole || prereqList.length > 0) {
+          return merged;
+        }
+      }
+      // One-time migration fallback from legacy candidates/<userId>
+      const legacySnap = await getDoc(doc(db, 'candidates', userId));
+      if (legacySnap.exists()) {
+        const legacyData = legacySnap.data() as CandidateDossier;
+        void saveCandidateDossier(userId, legacyData);
+        return legacyData;
+      }
+    } catch (err) {
+      console.warn('Could not load user profile from Firestore (checking localStorage):', err);
+    }
   }
 
   try {
@@ -224,10 +343,59 @@ export async function loadUserFirebaseTasks(userId: string): Promise<FirebaseTas
   }
 }
 
+export async function deleteFirebaseTask(
+  userId: string,
+  conversationId: string,
+  userEmail?: string | null,
+): Promise<void> {
+  if (!conversationId) return;
+  try {
+    await deleteDoc(doc(db, 'tasks', conversationId)).catch(() => undefined);
+    if (userId && userId !== 'guest-user') {
+      const q = query(
+        collection(db, 'tasks'),
+        where('userId', '==', userId),
+        where('conversationId', '==', conversationId),
+      );
+      const snap = await getDocs(q);
+      await Promise.all(snap.docs.map((d) => deleteDoc(d.ref)));
+    }
+    // Cascade delete any matching submission receipts & messages in Firestore
+    const subByConv = query(
+      collection(db, 'nexora_submissions'),
+      where('conversationId', '==', conversationId),
+    );
+    const subSnap = await getDocs(subByConv);
+    await Promise.all(subSnap.docs.map((d) => deleteDoc(d.ref)));
+
+    if (userEmail) {
+      const subByEmail = query(
+        collection(db, 'nexora_submissions'),
+        where('customerEmail', '==', userEmail),
+      );
+      const subEmailSnap = await getDocs(subByEmail);
+      await Promise.all(
+        subEmailSnap.docs
+          .filter((d) => !d.data().conversationId || d.data().conversationId === conversationId)
+          .map((d) => deleteDoc(d.ref)),
+      );
+    }
+
+    const msgQ = query(
+      collection(db, 'nexora_messages'),
+      where('conversationId', '==', conversationId),
+    );
+    const msgSnap = await getDocs(msgQ);
+    await Promise.all(msgSnap.docs.map((d) => deleteDoc(d.ref)));
+  } catch (err) {
+    console.warn('Could not delete Firestore task:', err);
+  }
+}
+
 /**
- * Delete all Firestore tasks & candidate dossier records for a user
+ * Delete all Firestore tasks, submissions, messages & candidate dossier records for a user
  */
-export async function clearUserFirestoreData(userId: string): Promise<void> {
+export async function clearUserFirestoreData(userId: string, userEmail?: string | null): Promise<void> {
   try {
     localStorage.removeItem(`nexora_candidate_${userId}`);
   } catch {}
@@ -237,6 +405,15 @@ export async function clearUserFirestoreData(userId: string): Promise<void> {
     const q = query(collection(db, 'tasks'), where('userId', '==', userId));
     const snap = await getDocs(q);
     await Promise.all(snap.docs.map((d) => deleteDoc(d.ref)));
+
+    if (userEmail) {
+      const subQ = query(collection(db, 'nexora_submissions'), where('customerEmail', '==', userEmail));
+      const subSnap = await getDocs(subQ);
+      await Promise.all(subSnap.docs.map((d) => deleteDoc(d.ref)));
+    }
+    const subUidQ = query(collection(db, 'nexora_submissions'), where('userUid', '==', userId));
+    const subUidSnap = await getDocs(subUidQ);
+    await Promise.all(subUidSnap.docs.map((d) => deleteDoc(d.ref)));
   } catch (err) {
     console.warn('Could not clear Firestore data:', err);
   }

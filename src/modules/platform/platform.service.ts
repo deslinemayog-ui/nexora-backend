@@ -4,13 +4,18 @@ import path from 'path';
 import pdfParse from 'pdf-parse';
 import { logger } from '../../utils/logger';
 import { sendMail } from '../../tools/email.service';
+import { autopilotService } from '../../tools/autopilot.service';
 import { documentGeneratorService } from '../../tools/document-generator.service';
 import { paystackService } from '../../tools/paystack.service';
+import { uploadToFirebaseStorage } from '../../tools/firebase-storage.service';
 import { OpenClawService } from '../../openclaw/openclaw.service';
 import {
   ApplicationStatusType,
   DocumentAccessLogRecord,
+  INTERVIEW_PROVIDER_RATES_USD,
+  InterviewProviderType,
   InterviewRecord,
+  InterviewRecordingRecord,
   MonthlyInvoiceRecord,
   NotificationRecord,
   OrganisationCategoryType,
@@ -309,6 +314,9 @@ export class PlatformService {
     };
     state.vacancies.unshift(vacancy);
     platformStore.save();
+    if (vacancy.status === 'PUBLISHED' && process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
+      void autopilotService.onNewNexoraVacancyPublished(vacancy);
+    }
     return vacancy;
   }
 
@@ -810,7 +818,9 @@ export class PlatformService {
       interviewTime: string;
       timezone: string;
       interviewType: 'ONLINE' | 'TELEPHONE' | 'IN_PERSON';
-      locationOrLink: string;
+      interviewProvider?: InterviewProviderType;
+      aiQuestions?: string;
+      locationOrLink?: string;
       instructions?: string;
     },
   ): Promise<InterviewRecord> {
@@ -820,6 +830,19 @@ export class PlatformService {
 
     const now = new Date().toISOString();
     const companyName = org.tradingName || org.registeredName;
+    const provider: InterviewProviderType = input.interviewProvider || 'EXTERNAL';
+    if ((provider === 'GOOGLE_LIVE' || provider === 'NUANCE') && !input.aiQuestions?.trim()) {
+      throw new Error('Please enter the interview questions for the AI interviewer.');
+    }
+    const ratePerMinuteUsd = INTERVIEW_PROVIDER_RATES_USD[provider] ?? 0;
+    const resolvedLocation =
+      input.locationOrLink?.trim() ||
+      (provider === 'GOOGLE_LIVE'
+        ? 'Nexora AI Live Room (Google Live • $0.50/min)'
+        : provider === 'NUANCE'
+          ? 'Nexora AI Video Room (Nuance Persona • $2.00/min)'
+          : 'Provided by organisation');
+
     const interview: InterviewRecord = {
       id: `int-${crypto.randomUUID().slice(0, 10)}`,
       organisationId,
@@ -835,7 +858,10 @@ export class PlatformService {
       interviewTime: input.interviewTime,
       timezone: input.timezone || 'UTC',
       interviewType: input.interviewType,
-      locationOrLink: input.locationOrLink,
+      interviewProvider: provider,
+      ratePerMinuteUsd,
+      aiQuestions: input.aiQuestions?.trim() || undefined,
+      locationOrLink: resolvedLocation,
       instructions: input.instructions,
       status: 'SCHEDULED',
       createdAt: now,
@@ -873,7 +899,7 @@ export class PlatformService {
     const endHour = String((startHour + Math.floor(startMin / 60)) % 24).padStart(2, '0');
     const endMin = String(startMin % 60).padStart(2, '0');
     const endDt = `${cleanDate}T${endHour}${endMin}00`;
-    const gcalUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(`Interview: ${input.jobTitle} — ${companyName}`)}&dates=${startDt}/${endDt}&ctz=${encodeURIComponent(input.timezone || 'Africa/Johannesburg')}&details=${encodeURIComponent(input.instructions || `Interview with ${companyName} via Nexora AI.`)}&location=${encodeURIComponent(input.locationOrLink)}`;
+    const gcalUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(`Interview: ${input.jobTitle} — ${companyName}`)}&dates=${startDt}/${endDt}&ctz=${encodeURIComponent(input.timezone || 'Africa/Johannesburg')}&details=${encodeURIComponent(input.instructions || `Interview with ${companyName} via Nexora AI.`)}&location=${encodeURIComponent(resolvedLocation)}`;
 
     const icsContent = [
       'BEGIN:VCALENDAR',
@@ -1013,6 +1039,137 @@ export class PlatformService {
         (emailLower && i.candidateEmail?.toLowerCase() === emailLower) ||
         (i.applicationId && matchingAppIds.has(i.applicationId)),
     );
+  }
+
+  public listInterviewRecordings(userUid: string): InterviewRecordingRecord[] {
+    const state = platformStore.getState();
+    return (state.interviewRecordings || []).filter((r) => r.userUid === userUid);
+  }
+
+  public async saveInterviewRecording(input: {
+    userUid: string;
+    interviewId?: string;
+    role: string;
+    companyName: string;
+    interviewType: string;
+    interviewProvider?: InterviewProviderType;
+    durationSeconds: number;
+    hasVideo: boolean;
+    mimeType: string;
+    mediaBase64: string;
+    transcript: Array<{ speaker: 'ai' | 'user'; text: string; timestamp: string }>;
+  }): Promise<{ recording: InterviewRecordingRecord; invoice?: MonthlyInvoiceRecord }> {
+    const state = platformStore.getState();
+    if (!Array.isArray(state.interviewRecordings)) {
+      state.interviewRecordings = [];
+    }
+
+    const linkedInterview = input.interviewId
+      ? state.interviews.find((iv) => iv.id === input.interviewId)
+      : undefined;
+
+    const provider: InterviewProviderType =
+      linkedInterview?.interviewProvider || input.interviewProvider || 'GOOGLE_LIVE';
+    const ratePerMinuteUsd = INTERVIEW_PROVIDER_RATES_USD[provider] ?? 0.5;
+    const durationSeconds = Math.max(1, Math.round(input.durationSeconds || 1));
+    const billedMinutes = Math.max(1, Math.ceil(durationSeconds / 60));
+    const billedAmountUsd = Math.round(billedMinutes * ratePerMinuteUsd * 100) / 100;
+
+    const buffer = Buffer.from(input.mediaBase64, 'base64');
+    const recId = `rec-${crypto.randomUUID().slice(0, 10)}`;
+    const safeUid = input.userUid.replace(/[^a-zA-Z0-9_-]/g, '_') || 'candidate';
+    const cleanMimeType = (input.mimeType || (input.hasVideo ? 'video/webm' : 'audio/webm'))
+      .split(';')[0]
+      .trim();
+    const ext = cleanMimeType.includes('mp4') ? 'mp4' : 'webm';
+    const storagePath = `interviews/${safeUid}/${recId}.${ext}`;
+
+    const uploadedUrl = await uploadToFirebaseStorage(
+      storagePath,
+      buffer,
+      cleanMimeType,
+    );
+    if (!uploadedUrl) {
+      throw new Error('Could not upload interview recording to Firebase Storage.');
+    }
+
+    const now = new Date().toISOString();
+    const recording: InterviewRecordingRecord = {
+      id: recId,
+      userUid: input.userUid,
+      interviewId: linkedInterview?.id,
+      organisationId: linkedInterview?.organisationId,
+      companyName: linkedInterview?.companyName || input.companyName || 'Nexora AI Practice',
+      jobTitle: linkedInterview?.jobTitle || input.role || 'Live AI Interview',
+      interviewType: input.interviewType || 'Technical & Behavioral',
+      interviewProvider: provider,
+      ratePerMinuteUsd,
+      durationSeconds,
+      billedMinutes,
+      billedAmountUsd,
+      hasVideo: input.hasVideo,
+      mimeType: input.mimeType || (input.hasVideo ? 'video/webm' : 'audio/webm'),
+      fileSizeBytes: buffer.length,
+      storagePath,
+      recordingUrl: uploadedUrl,
+      transcript: Array.isArray(input.transcript) ? input.transcript.slice(0, 200) : [],
+      createdAt: now,
+    };
+
+    state.interviewRecordings.unshift(recording);
+
+    let invoice: MonthlyInvoiceRecord | undefined;
+    if (linkedInterview) {
+      linkedInterview.recordedDurationSec = durationSeconds;
+      linkedInterview.billedMinutes = billedMinutes;
+      linkedInterview.billedAmountUsd = billedAmountUsd;
+      linkedInterview.recordingId = recId;
+      linkedInterview.recordingUrl = uploadedUrl;
+      linkedInterview.status = 'COMPLETED';
+      linkedInterview.updatedAt = now;
+
+      // Accrue AI interview cost onto the company's Monthly Invoice (Google Live $0.50/min, Nuance $2.00/min)
+      if (billedAmountUsd > 0) {
+        const org = state.organisations.find((o) => o.id === linkedInterview.organisationId);
+        if (org) {
+          const billingMonth = now.slice(0, 7);
+          const providerLabel = provider === 'NUANCE' ? 'Nuance AI ($2.00/min)' : 'Google Live AI ($0.50/min)';
+          const existingInv = state.invoices.find(
+            (inv) => inv.organisationId === org.id && inv.interviewId === linkedInterview.id,
+          );
+          if (!existingInv) {
+            invoice = {
+              id: `inv-${crypto.randomUUID().slice(0, 10)}`,
+              invoiceNumber: `NX-${billingMonth.replace('-', '')}-${crypto.randomUUID().slice(0, 5).toUpperCase()}`,
+              organisationId: org.id,
+              organisationName: org.tradingName || org.registeredName,
+              billingEmail: org.billingEmail || org.recruitmentEmail || org.interviewEmail || '',
+              applicationId: linkedInterview.applicationId,
+              vacancyId: linkedInterview.vacancyId,
+              interviewId: linkedInterview.id,
+              interviewProvider: provider,
+              billedMinutes,
+              vacancyTitle: `${linkedInterview.jobTitle} — ${providerLabel} (${billedMinutes} min)`,
+              category: 'AI_INTERVIEW',
+              candidateName: linkedInterview.candidateName,
+              candidateEmail: linkedInterview.candidateEmail,
+              billingMonth,
+              dueDate: addDaysIso(now.slice(0, 10), 28),
+              offerAmountUsd: billedAmountUsd,
+              feePercent: 100,
+              feeAmountUsd: billedAmountUsd,
+              feeAmountCents: Math.round(billedAmountUsd * 100),
+              status: 'PENDING',
+              createdAt: now,
+            };
+            state.invoices.unshift(invoice);
+          }
+        }
+      }
+    }
+
+    platformStore.save();
+    return { recording, invoice };
   }
 
   public listInterviewsForOrganisation(organisationId: string): InterviewRecord[] {
@@ -1891,29 +2048,40 @@ export class PlatformService {
       });
     }
 
-    // 2. Merge Firestore `users` collection
+    // 2. Merge Firestore `users` collection ({ ...user, prerequisites: [{ type: 'JOB_AGENT', ... }, ...] })
     for (const u of fbUsers) {
       const uid = String(u.uid || u.id || '').trim();
-      const email = String(u.email || '').trim().toLowerCase();
+      const email = String(u.email || u.profile?.email || '').trim().toLowerCase();
       if (!uid && !email) continue;
       const key = uid || email;
+      const prereqArr: Array<Record<string, any>> = Array.isArray(u.prerequisites) ? u.prerequisites : [];
+      const jobP = prereqArr.find((p) => p?.type === 'JOB_AGENT') || {};
+      const prof = (u.profile && typeof u.profile === 'object' ? u.profile : {}) as Record<string, any>;
+      const hasProfile = Boolean(
+        jobP.targetRole || jobP.cvFileName || prof.fullName || u.fullName || u.phone || prereqArr.length > 0,
+      );
       const existing = byKey.get(key);
       if (existing) {
         if (!existing.candidateEmail && email) existing.candidateEmail = email;
-        if ((!existing.candidateName || existing.candidateName === 'Candidate') && (u.displayName || u.name)) {
-          existing.candidateName = String(u.displayName || u.name);
+        if ((!existing.candidateName || existing.candidateName === 'Candidate') && (u.displayName || prof.fullName || u.fullName || u.name)) {
+          existing.candidateName = String(u.displayName || prof.fullName || u.fullName || u.name);
         }
+        if (hasProfile) existing.hasCandidateProfile = true;
       } else {
         byKey.set(key, {
           userUid: uid || key,
           customerId: uid || key,
-          candidateName: String(u.displayName || u.name || (email ? email.split('@')[0] : 'Nexora User')),
+          candidateName: String(u.displayName || prof.fullName || u.fullName || u.name || (email ? email.split('@')[0] : 'Nexora User')),
           candidateEmail: email || `${uid}@nexora.user`,
+          candidatePhone: u.phone || prof.phone ? String(u.phone || prof.phone) : undefined,
+          headline: jobP.targetRole || prof.targetRole || u.targetRole ? String(jobP.targetRole || prof.targetRole || u.targetRole) : undefined,
+          location: u.location || prof.location ? String(u.location || prof.location) : undefined,
           skills: [],
           yearsExperience: 0,
-          hasCandidateProfile: false,
+          hasCandidateProfile: hasProfile,
           hasTranscript: false,
-          hasCv: false,
+          hasCv: Boolean(jobP.cvFileName || prof.cvFileName || u.cvFileName),
+          cvFileName: jobP.cvFileName || prof.cvFileName || u.cvFileName ? String(jobP.cvFileName || prof.cvFileName || u.cvFileName) : undefined,
         });
       }
     }
@@ -2177,7 +2345,9 @@ export class PlatformService {
       interviewTime: string;
       timezone?: string;
       interviewType?: InterviewRecord['interviewType'];
-      locationOrLink: string;
+      interviewProvider?: InterviewProviderType;
+      aiQuestions?: string;
+      locationOrLink?: string;
       instructions?: string;
     },
   ): Promise<InterviewRecord> {
@@ -2198,6 +2368,19 @@ export class PlatformService {
     }
 
     const now = new Date().toISOString();
+    const provider: InterviewProviderType = input.interviewProvider || 'EXTERNAL';
+    if ((provider === 'GOOGLE_LIVE' || provider === 'NUANCE') && !input.aiQuestions?.trim()) {
+      throw new Error('Please enter the interview questions for the AI interviewer.');
+    }
+    const ratePerMinuteUsd = INTERVIEW_PROVIDER_RATES_USD[provider] ?? 0;
+    const resolvedLocation =
+      input.locationOrLink?.trim() ||
+      (provider === 'GOOGLE_LIVE'
+        ? 'Nexora AI Live Room (Google Live • $0.50/min)'
+        : provider === 'NUANCE'
+          ? 'Nexora AI Video Room (Nuance Persona • $2.00/min)'
+          : 'Provided by organisation');
+
     const interview: InterviewRecord = {
       id: `int-${crypto.randomUUID().slice(0, 10)}`,
       organisationId,
@@ -2212,7 +2395,10 @@ export class PlatformService {
       interviewTime: input.interviewTime,
       timezone: input.timezone || 'Africa/Johannesburg',
       interviewType: input.interviewType || 'ONLINE',
-      locationOrLink: input.locationOrLink,
+      interviewProvider: provider,
+      ratePerMinuteUsd,
+      aiQuestions: input.aiQuestions?.trim() || undefined,
+      locationOrLink: resolvedLocation,
       instructions: input.instructions,
       status: 'INVITED',
       createdAt: now,

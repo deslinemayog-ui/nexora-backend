@@ -19,6 +19,8 @@ export interface SubmissionThreadMessage {
   receivedAt: string;
   isInterview: boolean;
   interviewSummary?: string;
+  isBounce?: boolean;
+  bounceReason?: string;
   companyName?: string;
   messageId?: string;
   attachments?: SubmissionAttachmentSummary[];
@@ -44,6 +46,36 @@ export interface SubmissionLookupTarget {
 
 const outboundThreadsByReceipt = new Map<string, SubmissionThreadMessage[]>();
 const webhookInboundReplies: SubmissionThreadMessage[] = [];
+
+export function detectBounceEmail(params: {
+  subject: string;
+  body: string;
+  fromAddress?: string;
+  rawSource?: string;
+}): { isBounce: boolean; reason: string } {
+  const fromLower = (params.fromAddress || '').toLowerCase();
+  const subjectLower = (params.subject || '').toLowerCase();
+  const combined = `${params.subject}\n${params.body}\n${(params.rawSource || '').slice(0, 4000)}`;
+
+  const isBounceSender = /(?:mailer-daemon|postmaster|mail-delivery|bounce|daemon@)/i.test(fromLower);
+  const isBounceSubject =
+    /(?:delivery\s+status\s+notification|undelivered\s+mail|mail\s+delivery\s+failed|returned\s+mail|failure\s+notice|undeliverable|delivery\s+failure)/i.test(
+      subjectLower,
+    );
+  const isBounceBody =
+    /(?:550\s+5\.1\.1|address\s+not\s+found|recipient\s+address\s+rejected|user\s+unknown|mailbox\s+unavailable|domain\s+not\s+found|could\s+not\s+be\s+delivered|permanent\s+error|message\s+blocked|does\s+not\s+exist)/i.test(
+      combined,
+    );
+
+  if (isBounceSender || isBounceSubject || (isBounceBody && /bounce|dsn|delivery|failed|undeliver/i.test(combined))) {
+    const snippet =
+      combined.match(
+        /(?:550[^\n]{0,120}|address\s+not\s+found[^\n]{0,100}|recipient\s+address\s+rejected[^\n]{0,100}|user\s+unknown[^\n]{0,100}|mailbox\s+unavailable[^\n]{0,100})/i,
+      )?.[0] || 'Email bounced / undeliverable';
+    return { isBounce: true, reason: snippet.trim() };
+  }
+  return { isBounce: false, reason: '' };
+}
 
 /**
  * Classifies whether an inbound email represents an interview / shortlist invitation.
@@ -292,6 +324,7 @@ export class ImapMonitorService {
     replies: SubmissionThreadMessage[];
     outboundMessages: SubmissionThreadMessage[];
     interviews: InterviewAlert[];
+    bouncedReceiptIds: string[];
     imapConnected: boolean;
     error?: string;
   }> {
@@ -315,6 +348,7 @@ export class ImapMonitorService {
     });
 
     const replies: SubmissionThreadMessage[] = [...webhookInboundReplies];
+    const bouncedReceiptSet = new Set<string>();
     const interviews: InterviewAlert[] = webhookInboundReplies
       .filter((r) => r.isInterview)
       .map((r) => ({
@@ -359,41 +393,73 @@ export class ImapMonitorService {
             const rawSource = message.source ? message.source.toString('utf8') : '';
             const body = extractReadableTextFromRawEmail(rawSource);
 
-            // Skip automated newsletters, bulk marketing emails, and Nexora's own outbound dispatches
+            const bounceCheck = detectBounceEmail({
+              subject,
+              body,
+              fromAddress,
+              rawSource,
+            });
+
+            // Skip automated newsletters, bulk marketing emails, and Nexora's own outbound dispatches (but NEVER skip bounces!)
             const isNewsletterOrBulk =
-              /(?:no[-_.]?reply|noreply|newsletter|marketing|updates@|hello@ollama\.com)/i.test(fromAddress) ||
-              /\bList-Unsubscribe:/i.test(rawSource.slice(0, 4000)) ||
-              /\b(?:unsubscribe|opted in to receive updates)\b/i.test(body);
+              !bounceCheck.isBounce &&
+              (/(?:no[-_.]?reply|noreply|newsletter|marketing|updates@|hello@ollama\.com)/i.test(fromAddress) ||
+                /\bList-Unsubscribe:/i.test(rawSource.slice(0, 4000)) ||
+                /\b(?:unsubscribe|opted in to receive updates)\b/i.test(body));
             const isOwnOutbound =
-              (fromAddress && fromAddress.toLowerCase() === imapUser.toLowerCase() && !/^re:/i.test(subject)) ||
-              /^\s*Dear Hiring Team at\b/i.test(body) ||
-              /^\s*Application Submission\s*[•·-]\s*Ref\s+SUB-/i.test(body);
-            if (isNewsletterOrBulk || isOwnOutbound || !body) {
+              !bounceCheck.isBounce &&
+              ((fromAddress && fromAddress.toLowerCase() === imapUser.toLowerCase() && !/^re:/i.test(subject)) ||
+                /^\s*Dear Hiring Team at\b/i.test(body) ||
+                /^\s*Application Submission\s*[•·-]\s*Ref\s+SUB-/i.test(body));
+            if (isNewsletterOrBulk || isOwnOutbound || (!body && !bounceCheck.isBounce)) {
               continue;
             }
 
-            // Match against rawSource + subject so stripped SUB-XXXX receipts in quoted threads still match!
-            const matched = matchReplyToSubmission(
-              { subject, body: `${body}\n${rawSource.slice(0, 6000)}`, fromAddress, fromName },
+            // Match against rawSource + subject so stripped SUB-XXXX receipts in quoted threads & bounce DSNs still match!
+            let matched = matchReplyToSubmission(
+              { subject, body: `${body}\n${rawSource.slice(0, 8000)}`, fromAddress, fromName },
               submissions,
             );
+
+            // For bounce DSNs, also match by bounced recipient email address in rawSource
+            if (!matched && bounceCheck.isBounce && submissions.length > 0) {
+              const rawLower = rawSource.slice(0, 8000).toLowerCase();
+              matched = submissions.find(
+                (sub) =>
+                  (sub.contactEmail && rawLower.includes(sub.contactEmail.toLowerCase())) ||
+                  (sub.deliveredToEmail &&
+                    sub.deliveredToEmail.toLowerCase() !== (process.env.TEST_RECIPIENT_EMAIL || 'info@empiredigitals.org').toLowerCase() &&
+                    rawLower.includes(sub.deliveredToEmail.toLowerCase())),
+              );
+            }
 
             // Skip unrelated inbox noise (newsletters, Google security alerts, Ollama updates, etc.)
             // Only surface messages that actually match a tracked submission (or contain a SUB- receipt / application reply when no submissions filter is passed)
             const looksLikeApplicationReply =
-              /\bSUB-[A-Z0-9]{6,10}\b/i.test(`${subject}\n${body}`) ||
+              /\bSUB-[A-Z0-9]{6,10}\b/i.test(`${subject}\n${body}\n${rawSource.slice(0, 4000)}`) ||
               /\b(?:job\s+application|relocation|investor|scholarship\s+application)\b/i.test(subject);
 
             if (submissions.length > 0 ? !matched : !looksLikeApplicationReply) {
               continue;
             }
 
-            const classification = classifyInterviewEmail({
-              subject,
-              body,
-              fromName,
-              fromAddress,
-            });
+            if (bounceCheck.isBounce) {
+              const bouncedId =
+                matched?.receiptId ||
+                `${subject}\n${body}\n${rawSource.slice(0, 6000)}`.match(/\b(SUB-[A-Z0-9]{6,10})\b/i)?.[1]?.toUpperCase();
+              if (bouncedId) {
+                bouncedReceiptSet.add(bouncedId);
+              }
+            }
+
+            const classification = bounceCheck.isBounce
+              ? { isInterview: false, companyName: matched?.targetName || 'Mail Delivery Subsystem', summary: bounceCheck.reason }
+              : classifyInterviewEmail({
+                  subject,
+                  body,
+                  fromName,
+                  fromAddress,
+                });
 
             const companyName = matched?.targetName || classification.companyName;
             const msgRecord: SubmissionThreadMessage = {
@@ -403,10 +469,12 @@ export class ImapMonitorService {
               from: fromName !== fromAddress ? `${fromName} <${fromAddress}>` : fromAddress,
               to: imapUser,
               subject,
-              body,
+              body: bounceCheck.isBounce ? `[BOUNCED — AUTO-REFUNDED] ${bounceCheck.reason}\n${body}` : body,
               receivedAt,
               isInterview: classification.isInterview,
               interviewSummary: classification.isInterview ? classification.summary : undefined,
+              isBounce: bounceCheck.isBounce,
+              bounceReason: bounceCheck.isBounce ? bounceCheck.reason : undefined,
               companyName,
               messageId: message.envelope?.messageId,
             };
@@ -434,6 +502,7 @@ export class ImapMonitorService {
         replies,
         outboundMessages,
         interviews,
+        bouncedReceiptIds: Array.from(bouncedReceiptSet),
         imapConnected: true,
       };
     } catch (err) {
@@ -444,6 +513,7 @@ export class ImapMonitorService {
         replies,
         outboundMessages,
         interviews,
+        bouncedReceiptIds: Array.from(bouncedReceiptSet),
         imapConnected: false,
         error: detailedError,
       };

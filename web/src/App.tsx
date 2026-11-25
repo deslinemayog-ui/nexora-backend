@@ -7,8 +7,10 @@ import {
   subscribeToAuthChanges,
   saveCandidateDossier,
   loadCandidateDossier,
+  loadUserCreditBalance,
   createFirebaseTask,
   loadUserFirebaseTasks,
+  deleteFirebaseTask,
   clearUserFirestoreData,
   loadOrSeedFirestoreAgents,
   type User,
@@ -36,6 +38,7 @@ import {
   PanelLeft,
   Image as ImageIcon,
   Clock,
+  ChevronRight,
   ClipboardCheck,
   Share2,
   ExternalLink,
@@ -204,7 +207,21 @@ export const App: React.FC = () => {
   );
   const [showTasksDrawer, setShowTasksDrawer] = useState(false);
   const [showPlusMenu, setShowPlusMenu] = useState(false);
-  const [activeMainView, setActiveMainView] = useState<'chat' | 'assignments' | 'interviews'>('chat');
+  const [activeMainView, setActiveMainView] = useState<'chat' | 'assignments' | 'interviews' | 'autopilot'>('chat');
+  const [previousTasksExpanded, setPreviousTasksExpanded] = useState(true);
+  const [autopilotSubmissions, setAutopilotSubmissions] = useState<Array<{
+    id: string;
+    receiptId: string;
+    targetName: string;
+    contactEmail?: string;
+    deliveredToEmail?: string;
+    portalUrl?: string;
+    status?: string;
+    costCents?: number;
+    submittedAt?: string;
+    followUpSentAt?: string;
+  }>>([]);
+  const [loadingAutopilotSubs, setLoadingAutopilotSubs] = useState(false);
   const [pendingAssignmentPrereqId, setPendingAssignmentPrereqId] = useState<string | null>(null);
   const [assignmentsRefreshKey, setAssignmentsRefreshKey] = useState(0);
   const [showSupportingDocsModal, setShowSupportingDocsModal] = useState(false);
@@ -228,8 +245,40 @@ export const App: React.FC = () => {
     message: string;
     confirmLabel: string;
     danger?: boolean;
-    onConfirm: () => void;
+    showSubmissionCountPicker?: boolean;
+    agentType?: string;
+    onConfirm: (selectedCount?: number, selectedMode?: 'EMAIL_ONLY' | 'FORM_ONLY' | 'BOTH') => void;
   } | null>(null);
+  const [submissionMode, setSubmissionMode] = useState<'EMAIL_ONLY' | 'FORM_ONLY' | 'BOTH'>('EMAIL_ONLY');
+  const [pendingVerificationModal, setPendingVerificationModal] = useState<{
+    jobId: string;
+    id: string;
+    type: 'OTP' | 'EMAIL_LINK' | 'MISSING_INFO';
+    targetName: string;
+    portalUrl: string;
+    message: string;
+    missingFields?: Array<{
+      key: string;
+      label: string;
+      selector: string;
+      inputType: 'text' | 'textarea' | 'select';
+      placeholder?: string;
+      options?: string[];
+    }>;
+    missingDocuments?: Array<{
+      key: string;
+      label: string;
+      selector: string;
+      accept?: string;
+    }>;
+  } | null>(null);
+  const [otpInputValue, setOtpInputValue] = useState('');
+  const [missingFieldValues, setMissingFieldValues] = useState<Record<string, string>>({});
+  const [missingDocUploads, setMissingDocUploads] = useState<
+    Record<string, { fileName: string; contentBase64: string }>
+  >({});
+  const [missingDocDrafts, setMissingDocDrafts] = useState<Record<string, boolean>>({});
+  const [isSubmittingVerification, setIsSubmittingVerification] = useState(false);
 
   // Candidate Dossier / CV Upload Modal State
   const [showDossierModal, setShowDossierModal] = useState(false);
@@ -340,9 +389,27 @@ export const App: React.FC = () => {
     costPerSubmissionCents: number;
     costPerSubmissionDollars: string;
   }>>([]);
-  const [walletBalanceDollars, setWalletBalanceDollars] = useState<string>('5.00');
+  const [walletBalanceDollars, setWalletBalanceDollars] = useState<string>('0.00');
   const [submissionLimit, setSubmissionLimit] = useState<number>(3);
   const [showTopUpModal, setShowTopUpModal] = useState(false);
+  const [showAutopilotModal, setShowAutopilotModal] = useState(false);
+  const [transcriptWarningPending, setTranscriptWarningPending] = useState<{
+    interviewInChat: boolean;
+  } | null>(null);
+  const [autopilotConfig, setAutopilotConfig] = useState<{
+    enabled: boolean;
+    status: 'ACTIVE' | 'PAUSED' | 'HIRED' | 'LOW_BALANCE';
+    dailyLimit: number;
+    costPerSubmissionCents: number;
+    runHourLocal: number;
+    lastRunDate?: string;
+    lastRunSubmittedCount?: number;
+    totalSubmitted: number;
+    appliedEmails: string[];
+  } | null>(null);
+  const [isSavingAutopilot, setIsSavingAutopilot] = useState(false);
+  const [isRunningAutopilotNow, setIsRunningAutopilotNow] = useState(false);
+  const [autopilotNotice, setAutopilotNotice] = useState<string | null>(null);
   const [creditPackages, setCreditPackages] = useState<Array<{
     id: string;
     name: string;
@@ -721,7 +788,12 @@ export const App: React.FC = () => {
       const res = await apiFetch('/api/v1/submissions/replies', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ submissions: subs, lookbackDays: 14 }),
+        body: JSON.stringify({
+          submissions: subs,
+          lookbackDays: 14,
+          userUid: currentUser?.uid,
+          phone: getSessionPhoneNumber(currentUser).replace(/\D/g, ''),
+        }),
       });
       if (res.ok) {
         const json = await res.json();
@@ -730,6 +802,9 @@ export const App: React.FC = () => {
           setOutboundThreadMsgs(json.data.outboundMessages || []);
           setInterviewAlerts(json.data.interviews || []);
           setImapError(json.data.imapConnected ? null : json.data.error || 'Zoho IMAP unavailable');
+          if (typeof json.data.wallet?.balanceDollars === 'string') {
+            setWalletBalanceDollars(json.data.wallet.balanceDollars);
+          }
         }
       }
     } catch {
@@ -747,16 +822,18 @@ export const App: React.FC = () => {
   }, [conversations.length, showTasksDrawer, activeMainView, activeConvId]);
 
   useEffect(() => {
+    let cancelled = false;
     const loadAgentsAndWallet = async () => {
       try {
         const fsAgents = await loadOrSeedFirestoreAgents();
+        if (cancelled) return;
         if (fsAgents.length > 0) {
           setAgentCatalog(fsAgents);
         } else {
           const agentsRes = await apiFetch('/api/v1/agents');
-          if (agentsRes.ok) {
+          if (!cancelled && agentsRes.ok) {
             const agentsJson = await agentsRes.json();
-            if (agentsJson.ok && Array.isArray(agentsJson.data)) {
+            if (!cancelled && agentsJson.ok && Array.isArray(agentsJson.data)) {
               setAgentCatalog(agentsJson.data);
             }
           }
@@ -765,24 +842,54 @@ export const App: React.FC = () => {
         // keep fallback TASK_CHOICES
       }
 
-      try {
-        const phone = getSessionPhoneNumber(currentUser).replace(/\D/g, '');
-        const walletRes = await apiFetch(`/api/v1/wallet?phone=${encodeURIComponent(phone)}`);
-        if (walletRes.ok) {
-          const walletJson = await walletRes.json();
-          if (walletJson.ok && walletJson.data?.balanceDollars) {
-            setWalletBalanceDollars(walletJson.data.balanceDollars);
+      if (currentUser?.uid) {
+        apiFetch(`/api/v1/autopilot?userUid=${encodeURIComponent(currentUser.uid)}`)
+          .then((r) => (r.ok ? r.json() : null))
+          .then((j) => {
+            if (!cancelled && j?.ok && j.data) {
+              setAutopilotConfig(j.data);
+            }
+          })
+          .catch(() => undefined);
+        apiFetch(`/api/v1/autopilot/submissions?userUid=${encodeURIComponent(currentUser.uid)}`)
+          .then((r) => (r.ok ? r.json() : null))
+          .then((j) => {
+            if (!cancelled && j?.ok && Array.isArray(j.data)) {
+              setAutopilotSubmissions(j.data);
+            }
+          })
+          .catch(() => undefined);
+      }
+      if (currentUser?.uid) {
+        try {
+          const fsBalance = await loadUserCreditBalance(currentUser.uid);
+          if (cancelled) return;
+          if (fsBalance !== null) {
+            setWalletBalanceDollars(fsBalance);
+          } else {
+            const phone = getSessionPhoneNumber(currentUser).replace(/\D/g, '');
+            const walletRes = await apiFetch(
+              `/api/v1/wallet?phone=${encodeURIComponent(phone)}&userUid=${encodeURIComponent(currentUser.uid)}`,
+            );
+            if (!cancelled && walletRes.ok) {
+              const walletJson = await walletRes.json();
+              if (!cancelled && walletJson.ok && walletJson.data?.balanceDollars) {
+                setWalletBalanceDollars(walletJson.data.balanceDollars);
+              }
+            }
           }
+        } catch {
+          // keep current balance
         }
-      } catch {
-        // default $5.00
+      } else if (!cancelled) {
+        setWalletBalanceDollars('0.00');
       }
 
       try {
         const pkgRes = await apiFetch('/api/v1/payments/paystack/packages');
-        if (pkgRes.ok) {
+        if (!cancelled && pkgRes.ok) {
           const pkgJson = await pkgRes.json();
-          if (pkgJson.ok && pkgJson.data) {
+          if (!cancelled && pkgJson.ok && pkgJson.data) {
             setCreditPackages(pkgJson.data.packages || []);
             setPaystackConfigured(Boolean(pkgJson.data.configured));
           }
@@ -791,8 +898,11 @@ export const App: React.FC = () => {
         // ignore
       }
     };
-    loadAgentsAndWallet();
-  }, [currentUser]);
+    void loadAgentsAndWallet();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser?.uid]);
 
   const verifyPaystackReference = async (refCode: string) => {
     setIsProcessingPaystack(true);
@@ -1066,7 +1176,7 @@ export const App: React.FC = () => {
 
     // 2. Otherwise try loading from backend state
     try {
-      const userPhone = getSessionPhoneNumber(currentUser);
+      const userPhone = candidatePhone.trim() || getSessionPhoneNumber(currentUser);
       const userDisplay = currentUser?.displayName || currentUser?.email?.split('@')[0] || 'Guest';
 
       const res = await apiFetch(
@@ -1191,7 +1301,7 @@ export const App: React.FC = () => {
     setPreviewPdfDoc(null);
     setShowTasksDrawer(false);
     setActivePrereqTask(null);
-    setWalletBalanceDollars('5.00');
+    setWalletBalanceDollars('0.00');
     setCandidateName('');
     setCandidateEmail('');
     setCandidatePhone('');
@@ -1602,6 +1712,58 @@ export const App: React.FC = () => {
             ))}
           </div>
         )}
+        {(() => {
+          const hasAttachedTranscript = savedTranscripts.some(
+            (t) => t.pdfFileName && selectedAttachFileNames.includes(t.pdfFileName),
+          );
+          if (hasAttachedTranscript) return null;
+          return (
+            <div
+              style={{
+                marginTop: '10px',
+                padding: '9px 11px',
+                borderRadius: '8px',
+                background: 'rgba(245, 158, 11, 0.12)',
+                border: '1px solid rgba(245, 158, 11, 0.35)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '10px',
+                flexWrap: 'wrap',
+              }}
+            >
+              <span style={{ fontSize: '11.5px', color: '#fde68a', lineHeight: 1.4, flex: 1 }}>
+                ⚠️{' '}
+                {savedTranscripts.length === 0
+                  ? 'Candidates who complete an assignment get higher priority with employers.'
+                  : 'Attach your Assessment Transcript above — verified candidates get higher priority with employers.'}
+              </span>
+              {savedTranscripts.length === 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPendingAssignmentPrereqId(null);
+                    setActivePrereqTask(null);
+                    setActiveMainView('assignments');
+                  }}
+                  style={{
+                    padding: '5px 10px',
+                    borderRadius: '7px',
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    background: '#f59e0b',
+                    color: '#0f172a',
+                    border: 'none',
+                    cursor: 'pointer',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  Take an Assignment →
+                </button>
+              )}
+            </div>
+          );
+        })()}
       </div>
     );
   };
@@ -1641,9 +1803,24 @@ export const App: React.FC = () => {
     })();
   }, [activeMainView, currentUser?.uid, candidateName, candidateEmail, candidateRole, prereqDocs.cv?.fileName, uploadedCvFile?.name]);
 
-  const handleSubmitPrerequisites = async (e: React.FormEvent, interviewInChat = false) => {
+  const handleSubmitPrerequisites = async (
+    e: React.FormEvent,
+    interviewInChat = false,
+    skipTranscriptWarning = false,
+  ) => {
     e.preventDefault();
     if (!activePrereqTask) return;
+
+    // Warn user on submit if they haven't attached an Assessment Transcript (unless saving prerequisites for an assignment itself)
+    if (!pendingAssignmentPrereqId && !skipTranscriptWarning && activePrereqTask !== 'investors') {
+      const hasAttachedTranscript = savedTranscripts.some(
+        (t) => t.pdfFileName && selectedAttachFileNames.includes(t.pdfFileName),
+      );
+      if (!hasAttachedTranscript) {
+        setTranscriptWarningPending({ interviewInChat });
+        return;
+      }
+    }
 
     const choice = TASK_CHOICES.find((t) => t.id === activePrereqTask)!;
     const userId = currentUser?.uid || 'guest-user';
@@ -1735,8 +1912,8 @@ export const App: React.FC = () => {
     } else if (activePrereqTask === 'relocate') {
       const hasRelocDoc = Boolean(
         (prereqDocs.passport?.fileName || prereqDocs.cv?.fileName || uploadedCvFile?.name) &&
-          !prereqDocs.passport?.draftRequested &&
-          !prereqDocs.cv?.draftRequested,
+        !prereqDocs.passport?.draftRequested &&
+        !prereqDocs.cv?.draftRequested,
       );
       const relocDocName = prereqDocs.passport?.fileName || prereqDocs.cv?.fileName || uploadedCvFile?.name;
       prompt = [
@@ -1755,8 +1932,8 @@ export const App: React.FC = () => {
     } else if (activePrereqTask === 'investors') {
       const hasInvestorDoc = Boolean(
         (prereqDocs.businessPlan?.fileName || prereqDocs.pitchDeck?.fileName) &&
-          !prereqDocs.businessPlan?.draftRequested &&
-          !prereqDocs.pitchDeck?.draftRequested,
+        !prereqDocs.businessPlan?.draftRequested &&
+        !prereqDocs.pitchDeck?.draftRequested,
       );
       const investorDocName = prereqDocs.pitchDeck?.fileName || prereqDocs.businessPlan?.fileName;
       const needsPlanDraft = prereqDocs.businessPlan?.draftRequested || prereqDocs.pitchDeck?.draftRequested;
@@ -1777,8 +1954,8 @@ export const App: React.FC = () => {
     } else {
       const hasScholarDoc = Boolean(
         (prereqDocs.transcripts?.fileName || prereqDocs.motivationLetter?.fileName || prereqDocs.cv?.fileName || uploadedCvFile?.name) &&
-          !prereqDocs.motivationLetter?.draftRequested &&
-          !prereqDocs.cv?.draftRequested,
+        !prereqDocs.motivationLetter?.draftRequested &&
+        !prereqDocs.cv?.draftRequested,
       );
       const scholarDocName =
         prereqDocs.motivationLetter?.fileName || prereqDocs.transcripts?.fileName || prereqDocs.cv?.fileName || uploadedCvFile?.name;
@@ -1908,7 +2085,7 @@ export const App: React.FC = () => {
       // 5. Trigger Backend Autonomous Execution
       setIsSending(true);
       try {
-        const userPhone = getSessionPhoneNumber(currentUser);
+        const userPhone = candidatePhone.trim() || getSessionPhoneNumber(currentUser);
         const res = await apiFetch('/api/v1/webchat/message', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1957,7 +2134,13 @@ export const App: React.FC = () => {
   };
 
   // Send message to backend agent
-  const handleSendMessage = async (textToSend?: string, convIdOverride?: string, agentOverride?: string) => {
+  const handleSendMessage = async (
+    textToSend?: string,
+    convIdOverride?: string,
+    agentOverride?: string,
+    maxSubmissionsOverride?: number,
+    submissionModeOverride?: 'EMAIL_ONLY' | 'FORM_ONLY' | 'BOTH',
+  ) => {
     const activeAttachments = textToSend ? [] : chatAttachments;
     const rawContent = textToSend || inputText;
     const content =
@@ -2032,7 +2215,7 @@ export const App: React.FC = () => {
     const promptWithRefs = extractedRefNotes ? `${content}\n\n${extractedRefNotes}` : content;
 
     try {
-      const userPhone = getSessionPhoneNumber(currentUser);
+      const userPhone = candidatePhone.trim() || getSessionPhoneNumber(currentUser);
       const displayName =
         candidateName.trim() ||
         currentUser?.displayName ||
@@ -2047,10 +2230,12 @@ export const App: React.FC = () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          userUid: currentUser?.uid || undefined,
           phoneNumber: userPhone,
           conversationId: currentConvId,
           agentType: effectiveAgent,
-          maxSubmissions: submissionLimit,
+          maxSubmissions: maxSubmissionsOverride ?? submissionLimit,
+          submissionMode: submissionModeOverride ?? submissionMode,
           costPerSubmissionCents: matchedCatalogAgent?.costPerSubmissionCents,
           deepThink: deepThinkMode,
           displayName,
@@ -2071,7 +2256,92 @@ export const App: React.FC = () => {
         }),
       });
 
-      const json = await res.json().catch(() => null);
+      let json = await res.json().catch(() => null);
+
+      // If this is a bulk run (>10 submissions), poll the background job with live progress until completion (zero timeout!)
+      if (res.ok && json?.data?.asyncJobId) {
+        const jobId: string = json.data.asyncJobId;
+        const progressMsgId = `progress-${jobId}`;
+        const totalTarget = json.data.totalTarget || (maxSubmissionsOverride ?? submissionLimit);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: progressMsgId,
+            direction: 'OUTBOUND',
+            messageType: 'TEXT',
+            content: `⏳ **Submitting applications (0 / ${totalTarget} sent)**\n\nAnalyzing your profile & discovering verified targets...`,
+            createdAt: new Date().toISOString(),
+          },
+        ]);
+
+        let finishedPayload: any = null;
+        let consecutive404s = 0;
+        const jobStartedAtMs = Date.now();
+        for (let tick = 0; tick < 600; tick++) {
+          await new Promise((r) => setTimeout(r, 3000));
+          try {
+            const pollRes = await apiFetch(`/api/v1/webchat/job/${encodeURIComponent(jobId)}`);
+            if (pollRes.status === 404) {
+              consecutive404s += 1;
+              if (consecutive404s >= 2) {
+                throw new Error(
+                  'Background job was interrupted (backend server restarted). Please click Approve & Submit again.',
+                );
+              }
+              continue;
+            }
+            if (!pollRes.ok) continue;
+            consecutive404s = 0;
+            const pollJson = await pollRes.json().catch(() => null);
+            const job = pollJson?.data;
+            if (!job) continue;
+
+            if (job.status === 'RUNNING') {
+              if (job.pendingVerification) {
+                setPendingVerificationModal((prev) =>
+                  prev?.id === job.pendingVerification.id
+                    ? prev
+                    : { jobId, ...job.pendingVerification },
+                );
+              } else {
+                setPendingVerificationModal((prev) => (prev?.jobId === jobId ? null : prev));
+              }
+              const elapsedSec = Math.floor((Date.now() - jobStartedAtMs) / 1000);
+              const elapsedLabel =
+                elapsedSec >= 60
+                  ? `${Math.floor(elapsedSec / 60)}m ${elapsedSec % 60}s`
+                  : `${elapsedSec}s`;
+              const latestLine = job.latestTarget ? `\nLatest: **${job.latestTarget}**` : '';
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === progressMsgId
+                    ? {
+                      ...m,
+                      content: `⏳ **Submitting applications (${job.sentCount || 0} / ${job.totalTarget || totalTarget} sent • ${elapsedLabel})**\n\n${job.phase || 'Working...'}${latestLine}`,
+                    }
+                    : m,
+                ),
+              );
+            } else if (job.status === 'COMPLETED' && job.result) {
+              finishedPayload = job.result;
+              break;
+            } else if (job.status === 'FAILED') {
+              throw new Error(job.error || 'Bulk submission failed');
+            }
+          } catch (pollErr) {
+            if (pollErr instanceof Error) {
+              setMessages((prev) => prev.filter((m) => m.id !== progressMsgId));
+              throw pollErr;
+            }
+          }
+        }
+
+        setMessages((prev) => prev.filter((m) => m.id !== progressMsgId));
+        setPendingVerificationModal(null);
+        if (finishedPayload) {
+          json = finishedPayload;
+        }
+      }
 
       if (res.ok && json) {
         const assistantText =
@@ -2637,7 +2907,7 @@ export const App: React.FC = () => {
             className={`sidebar-action-btn ${activeMainView === 'interviews' ? 'bg-white/10 text-white' : ''}`}
             style={{ justifyContent: 'space-between' }}
           >
-            <span className="flex items-center gap-2">
+            <span className="flex items-center" style={{ gap: '10px' }}>
               <CalendarDays className="w-4 h-4 text-emerald-400" />
               <span>Interviews</span>
             </span>
@@ -2655,6 +2925,53 @@ export const App: React.FC = () => {
                 {totalInterviewBadgeCount}
               </span>
             )}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setActiveMainView('autopilot');
+              if (currentUser?.uid) {
+                setLoadingAutopilotSubs(true);
+                apiFetch(`/api/v1/autopilot/submissions?userUid=${encodeURIComponent(currentUser.uid)}`)
+                  .then((r) => (r.ok ? r.json() : null))
+                  .then((j) => {
+                    if (j?.ok && Array.isArray(j.data)) setAutopilotSubmissions(j.data);
+                  })
+                  .finally(() => setLoadingAutopilotSubs(false));
+              }
+              if (typeof window !== 'undefined' && window.innerWidth <= 900) {
+                setSidebarCollapsed(true);
+              }
+            }}
+            className={`sidebar-action-btn ${activeMainView === 'autopilot' ? 'bg-white/10 text-white' : ''}`}
+            style={{ justifyContent: 'space-between' }}
+          >
+            <span className="flex items-center" style={{ gap: '10px' }}>
+              <Sparkles className="w-4 h-4 text-emerald-400" />
+              <span>Autopilot</span>
+            </span>
+            <span
+              style={{
+                fontSize: '10px',
+                fontWeight: 700,
+                padding: '1px 7px',
+                borderRadius: '999px',
+                background:
+                  autopilotConfig?.enabled && autopilotConfig?.status === 'ACTIVE'
+                    ? 'rgba(16, 185, 129, 0.22)'
+                    : 'rgba(100, 116, 139, 0.22)',
+                color:
+                  autopilotConfig?.enabled && autopilotConfig?.status === 'ACTIVE'
+                    ? '#6ee7b7'
+                    : '#94a3b8',
+              }}
+            >
+              {autopilotConfig?.status === 'HIRED'
+                ? 'HIRED'
+                : autopilotConfig?.enabled && autopilotConfig?.status === 'ACTIVE'
+                  ? 'ON'
+                  : 'OFF'}
+            </span>
           </button>
           <button
             type="button"
@@ -2681,88 +2998,148 @@ export const App: React.FC = () => {
             <UploadCloud className="w-4 h-4 text-cyan-400" />
             <span>Supporting Docs</span>
           </button>
+          <button
+            type="button"
+            onClick={() => setPreviousTasksExpanded((prev) => !prev)}
+            className="sidebar-action-btn"
+            style={{ justifyContent: 'space-between' }}
+            title={previousTasksExpanded ? 'Collapse previous tasks' : 'Expand previous tasks'}
+          >
+            <span className="flex items-center" style={{ gap: '10px' }}>
+              <Clock className="w-4 h-4 text-slate-400" />
+              <span>Previous tasks ({conversations.length})</span>
+            </span>
+            {previousTasksExpanded ? (
+              <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+            ) : (
+              <ChevronRight className="w-3.5 h-3.5 text-slate-400" />
+            )}
+          </button>
         </div>
 
-        {/* Previous tasks Section */}
-        <div className="sidebar-section-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span>Previous tasks</span>
-          {conversations.length > 0 && (
-            <button
-              onClick={() => {
-                setConfirmModal({
-                  title: 'Delete all tasks?',
-                  message: 'This will permanently delete all tasks, conversation history, and saved submissions.',
-                  confirmLabel: 'Delete All',
-                  danger: true,
-                  onConfirm: () => {
-                    setConversations([]);
-                    setActiveConvId(null);
-                    setMessages([]);
-                    localStorage.removeItem(getConversationsStorageKey(currentUser?.uid));
-                    localStorage.removeItem(LEGACY_STORAGE_KEY);
-                    localStorage.removeItem('nexora_user_conversations');
-                    localStorage.removeItem('nexora_user_conversations_v2');
-                    clearUserFirestoreData(currentUser?.uid || 'guest-user');
-                    setConfirmModal(null);
-                  },
-                });
-              }}
-              style={{ fontSize: '11px', color: '#94a3b8', background: 'transparent', border: 'none', cursor: 'pointer' }}
-              title="Delete all tasks"
-            >
-              Clear all
-            </button>
-          )}
-        </div>
-        <div className="sidebar-recents">
-          {conversations.length === 0 ? (
-            <div style={{ padding: '12px 14px', fontSize: '12px', color: '#64748b' }}>
-              No previous tasks
-            </div>
-          ) : (
-            conversations.map((conv) => (
+        {/* Previous tasks list */}
+        {previousTasksExpanded ? (
+          <>
+            {conversations.length > 0 && (
               <div
-                key={conv.id}
-                onClick={() => handleSelectConversation(conv)}
-                className={`recent-chat-item ${conv.id === activeConvId ? 'active' : ''}`}
-                title={conv.title}
-                style={{ cursor: 'pointer' }}
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  margin: '2px 10px 2px',
+                  padding: '2px 14px 4px 40px',
+                }}
               >
-                <span className="recent-chat-title">{conv.title}</span>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
-                  {conv.tasks.length > 0 && (
-                    <span className="recent-chat-badge">{conv.tasks.length} submissions</span>
-                  )}
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setConfirmModal({
-                        title: 'Delete this task?',
-                        message: `Are you sure you want to delete "${conv.title}" and its history?`,
-                        confirmLabel: 'Delete Task',
-                        danger: true,
-                        onConfirm: () => {
-                          const updated = conversations.filter((c) => c.id !== conv.id);
-                          setConversations(updated);
-                          if (activeConvId === conv.id) {
-                            setActiveConvId(updated.length > 0 ? updated[0].id : null);
-                            if (updated.length === 0) setMessages([]);
-                          }
-                          setConfirmModal(null);
-                        },
-                      });
-                    }}
-                    className="sidebar-icon-btn"
-                    style={{ padding: '2px', opacity: 0.65 }}
-                    title="Delete task"
-                  >
-                    <Trash2 className="w-3.5 h-3.5 text-slate-400 hover:text-rose-400" />
-                  </button>
-                </div>
+                <span style={{ fontSize: '11px', color: '#64748b', fontWeight: 600 }}>
+                  Recent
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setConfirmModal({
+                      title: 'Delete all tasks?',
+                      message: 'This will permanently delete all tasks, conversation history, and saved submissions.',
+                      confirmLabel: 'Delete All',
+                      danger: true,
+                      onConfirm: () => {
+                        setConversations([]);
+                        setActiveConvId(null);
+                        setMessages([]);
+                        localStorage.removeItem(getConversationsStorageKey(currentUser?.uid));
+                        localStorage.removeItem(LEGACY_STORAGE_KEY);
+                        localStorage.removeItem('nexora_user_conversations');
+                        localStorage.removeItem('nexora_user_conversations_v2');
+                        clearUserFirestoreData(
+                          currentUser?.uid || 'guest-user',
+                          candidateEmail || currentUser?.email,
+                        );
+                        void apiFetch('/api/v1/tasks/delete', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            userUid: currentUser?.uid,
+                            userEmail: candidateEmail || currentUser?.email,
+                          }),
+                        }).catch(() => undefined);
+                        setConfirmModal(null);
+                      },
+                    });
+                  }}
+                  style={{ fontSize: '11px', color: '#94a3b8', background: 'transparent', border: 'none', cursor: 'pointer', padding: 0 }}
+                  title="Delete all tasks"
+                >
+                  Clear all
+                </button>
               </div>
-            ))
-          )}
-        </div>
+            )}
+            <div className="sidebar-recents">
+              {conversations.length === 0 ? (
+                <div style={{ margin: '0 10px', padding: '8px 14px 8px 40px', fontSize: '12px', color: '#64748b' }}>
+                  No previous tasks
+                </div>
+              ) : (
+                conversations.map((conv) => (
+                  <div
+                    key={conv.id}
+                    onClick={() => handleSelectConversation(conv)}
+                    className={`recent-chat-item ${conv.id === activeConvId ? 'active' : ''}`}
+                    title={conv.title}
+                    style={{ cursor: 'pointer' }}
+                  >
+                    <span className="recent-chat-title">{conv.title}</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+                      {conv.tasks.length > 0 && (
+                        <span className="recent-chat-badge">{conv.tasks.length} submissions</span>
+                      )}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setConfirmModal({
+                            title: 'Delete this task?',
+                            message: `Are you sure you want to delete "${conv.title}" and its history?`,
+                            confirmLabel: 'Delete Task',
+                            danger: true,
+                            onConfirm: () => {
+                              const updated = conversations.filter((c) => c.id !== conv.id);
+                              setConversations(updated);
+                              if (activeConvId === conv.id) {
+                                setActiveConvId(updated.length > 0 ? updated[0].id : null);
+                                if (updated.length === 0) setMessages([]);
+                              }
+                              void deleteFirebaseTask(
+                                currentUser?.uid || 'guest-user',
+                                conv.id,
+                                candidateEmail || currentUser?.email,
+                              );
+                              void apiFetch('/api/v1/tasks/delete', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                  conversationId: conv.id,
+                                  userUid: currentUser?.uid,
+                                  userEmail: candidateEmail || currentUser?.email,
+                                  receiptIds: conv.tasks.map((t) => t.receiptId).filter(Boolean),
+                                }),
+                              }).catch(() => undefined);
+                              setConfirmModal(null);
+                            },
+                          });
+                        }}
+                        className="sidebar-icon-btn"
+                        style={{ padding: '2px', opacity: 0.65 }}
+                        title="Delete task"
+                      >
+                        <Trash2 className="w-3.5 h-3.5 text-slate-400 hover:text-rose-400" />
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </>
+        ) : (
+          <div style={{ flex: 1 }} />
+        )}
 
         {/* Sidebar Footer / User Profile */}
         <div className="sidebar-user-footer">
@@ -2857,9 +3234,11 @@ export const App: React.FC = () => {
                   ? 'Assignments'
                   : activeMainView === 'interviews'
                     ? 'Interviews'
-                    : activeConversation
-                      ? activeConversation.title
-                      : 'Nexora AI'}
+                    : activeMainView === 'autopilot'
+                      ? 'Morning Autopilot & Submissions'
+                      : activeConversation
+                        ? activeConversation.title
+                        : 'Nexora AI'}
               </span>
               <ChevronDown className="w-4 h-4 text-slate-400" />
             </button>
@@ -2912,7 +3291,296 @@ export const App: React.FC = () => {
           </div>
         </header>
 
-        {activeMainView === 'assignments' ? (
+        {activeMainView === 'autopilot' ? (
+          <div style={{ flex: 1, overflowY: 'auto', padding: '24px', maxWidth: '960px', width: '100%', margin: '0 auto' }}>
+            <div
+              style={{
+                background: 'rgba(15, 23, 42, 0.8)',
+                border: '1px solid rgba(148, 163, 184, 0.2)',
+                borderRadius: '16px',
+                padding: '20px',
+                marginBottom: '20px',
+              }}
+            >
+              <div className="flex items-center justify-between flex-wrap gap-3" style={{ marginBottom: '12px' }}>
+                <div>
+                  <h2 className="text-lg font-bold text-white" style={{ margin: 0 }}>
+                    ⚡ Morning Autopilot ($0.10 / job)
+                  </h2>
+                  <p className="text-xs text-slate-400" style={{ marginTop: '4px' }}>
+                    Submits up to 10 unique applications every morning at 08:00 (zero duplicate emails) until you pause, get hired, or reach $0.00 balance. Includes free 4-day follow-ups &amp; instant matching on Nexora partner vacancies.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    type="button"
+                    disabled={isSavingAutopilot || !currentUser?.uid}
+                    onClick={async () => {
+                      if (!currentUser?.uid) return;
+                      setIsSavingAutopilot(true);
+                      setAutopilotNotice(null);
+                      try {
+                        const nextEnabled = !(autopilotConfig?.enabled && autopilotConfig?.status === 'ACTIVE');
+                        const res = await apiFetch('/api/v1/autopilot', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ userUid: currentUser.uid, enabled: nextEnabled, dailyLimit: 10 }),
+                        });
+                        const j = await res.json();
+                        if (j?.ok && j.data) {
+                          setAutopilotConfig(j.data);
+                          setAutopilotNotice(nextEnabled ? 'Morning Autopilot is now ON.' : 'Morning Autopilot paused.');
+                        }
+                      } finally {
+                        setIsSavingAutopilot(false);
+                      }
+                    }}
+                    className="chat-action-btn primary"
+                    style={{
+                      padding: '8px 14px',
+                      background: autopilotConfig?.enabled && autopilotConfig?.status === 'ACTIVE' ? '#475569' : '#059669',
+                      borderColor: autopilotConfig?.enabled && autopilotConfig?.status === 'ACTIVE' ? '#64748b' : '#10b981',
+                      color: '#fff',
+                      fontWeight: 700,
+                    }}
+                  >
+                    {autopilotConfig?.enabled && autopilotConfig?.status === 'ACTIVE' ? 'Pause Autopilot' : 'Enable Autopilot'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isRunningAutopilotNow || !currentUser?.uid}
+                    onClick={async () => {
+                      if (!currentUser?.uid) return;
+                      setIsRunningAutopilotNow(true);
+                      setAutopilotNotice('Running morning Autopilot batch now (up to 10 unique jobs @ $0.10)...');
+                      try {
+                        const res = await apiFetch('/api/v1/autopilot/run-now', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ userUid: currentUser.uid }),
+                        });
+                        const j = await res.json();
+                        if (j?.ok && j.data) {
+                          if (j.data.config) setAutopilotConfig(j.data.config);
+                          if (typeof j.data.remainingBalanceCents === 'number') {
+                            setWalletBalanceDollars((j.data.remainingBalanceCents / 100).toFixed(2));
+                          }
+                          setAutopilotNotice(
+                            j.data.ran
+                              ? `Done! Submitted ${j.data.submittedCount} unique application(s) ($${(j.data.chargedCents / 100).toFixed(2)}).`
+                              : `Skipped: ${j.data.reason || 'Unable to run right now.'}`,
+                          );
+                          const subRes = await apiFetch(`/api/v1/autopilot/submissions?userUid=${encodeURIComponent(currentUser.uid)}`);
+                          const subJson = subRes.ok ? await subRes.json() : null;
+                          if (subJson?.ok && Array.isArray(subJson.data)) setAutopilotSubmissions(subJson.data);
+                        }
+                      } finally {
+                        setIsRunningAutopilotNow(false);
+                      }
+                    }}
+                    className="chat-action-btn"
+                    style={{ padding: '8px 14px' }}
+                  >
+                    {isRunningAutopilotNow ? 'Running...' : '▶ Run Batch Now'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isSavingAutopilot || !currentUser?.uid}
+                    onClick={async () => {
+                      if (!currentUser?.uid) return;
+                      setIsSavingAutopilot(true);
+                      try {
+                        const res = await apiFetch('/api/v1/autopilot', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ userUid: currentUser.uid, enabled: false, status: 'HIRED' }),
+                        });
+                        const j = await res.json();
+                        if (j?.ok && j.data) {
+                          setAutopilotConfig(j.data);
+                          setAutopilotNotice('Congratulations! Marked as HIRED and Autopilot stopped.');
+                        }
+                      } finally {
+                        setIsSavingAutopilot(false);
+                      }
+                    }}
+                    className="chat-action-btn"
+                    style={{ padding: '8px 14px', borderColor: '#3b82f6', color: '#93c5fd' }}
+                  >
+                    🎉 I Got Hired
+                  </button>
+                </div>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '10px' }}>
+                <div style={{ background: 'rgba(30,41,59,0.7)', borderRadius: '10px', padding: '12px' }}>
+                  <div className="text-[11px] text-slate-400">Status</div>
+                  <div className="text-sm font-bold text-emerald-400">{autopilotConfig?.status || 'PAUSED'}</div>
+                </div>
+                <div style={{ background: 'rgba(30,41,59,0.7)', borderRadius: '10px', padding: '12px' }}>
+                  <div className="text-[11px] text-slate-400">Autopilot Submissions</div>
+                  <div className="text-sm font-bold text-white">{autopilotSubmissions.length}</div>
+                </div>
+                <div style={{ background: 'rgba(30,41,59,0.7)', borderRadius: '10px', padding: '12px' }}>
+                  <div className="text-[11px] text-slate-400">Rate</div>
+                  <div className="text-sm font-bold text-white">$0.10 / job (10/day)</div>
+                </div>
+                <div style={{ background: 'rgba(30,41,59,0.7)', borderRadius: '10px', padding: '12px' }}>
+                  <div className="text-[11px] text-slate-400">4-Day Follow-Ups</div>
+                  <div className="text-sm font-bold text-emerald-400">FREE ($0.00)</div>
+                </div>
+              </div>
+
+              {autopilotNotice && (
+                <div
+                  style={{
+                    marginTop: '12px',
+                    fontSize: '12px',
+                    color: '#93c5fd',
+                    background: 'rgba(37, 99, 235, 0.18)',
+                    border: '1px solid rgba(96, 165, 250, 0.35)',
+                    borderRadius: '8px',
+                    padding: '8px 12px',
+                  }}
+                >
+                  {autopilotNotice}
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-between" style={{ marginBottom: '12px' }}>
+              <h3 className="text-sm font-bold text-white" style={{ margin: 0 }}>
+                Autopilot Job Submissions ({autopilotSubmissions.length})
+              </h3>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!currentUser?.uid) return;
+                  setLoadingAutopilotSubs(true);
+                  apiFetch(`/api/v1/autopilot/submissions?userUid=${encodeURIComponent(currentUser.uid)}`)
+                    .then((r) => (r.ok ? r.json() : null))
+                    .then((j) => {
+                      if (j?.ok && Array.isArray(j.data)) setAutopilotSubmissions(j.data);
+                    })
+                    .finally(() => setLoadingAutopilotSubs(false));
+                }}
+                className="chat-action-btn"
+                style={{ padding: '5px 12px', fontSize: '12px' }}
+              >
+                {loadingAutopilotSubs ? 'Refreshing...' : 'Refresh'}
+              </button>
+            </div>
+
+            {autopilotSubmissions.length === 0 ? (
+              <div
+                style={{
+                  background: 'rgba(15, 23, 42, 0.6)',
+                  border: '1px dashed rgba(148, 163, 184, 0.25)',
+                  borderRadius: '14px',
+                  padding: '32px',
+                  textAlign: 'center',
+                  color: '#94a3b8',
+                  fontSize: '13px',
+                }}
+              >
+                No Autopilot submissions yet. Enable Autopilot or click <strong>▶ Run Batch Now</strong> to submit up to 10 unique applications ($0.10 each).
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                {autopilotSubmissions.map((sub) => (
+                  <div
+                    key={sub.id}
+                    style={{
+                      background: 'rgba(15, 23, 42, 0.78)',
+                      border: '1px solid rgba(148, 163, 184, 0.18)',
+                      borderRadius: '12px',
+                      padding: '14px 16px',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      gap: '12px',
+                      flexWrap: 'wrap',
+                    }}
+                  >
+                    <div style={{ flex: 1, minWidth: '220px' }}>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm font-bold text-white">{sub.targetName}</span>
+                        <span
+                          style={{
+                            fontSize: '10.5px',
+                            fontWeight: 700,
+                            padding: '2px 7px',
+                            borderRadius: '999px',
+                            background: 'rgba(16, 185, 129, 0.2)',
+                            color: '#6ee7b7',
+                          }}
+                        >
+                          {sub.status || 'EMAIL_SENT'}
+                        </span>
+                        <span style={{ fontSize: '11px', color: '#94a3b8', fontFamily: 'monospace' }}>
+                          {sub.receiptId}
+                        </span>
+                        {sub.followUpSentAt && (
+                          <span
+                            style={{
+                              fontSize: '10.5px',
+                              fontWeight: 600,
+                              padding: '2px 7px',
+                              borderRadius: '999px',
+                              background: 'rgba(59, 130, 246, 0.2)',
+                              color: '#93c5fd',
+                            }}
+                          >
+                            ✓ Free 4-Day Follow-Up Sent
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs text-slate-400" style={{ marginTop: '4px' }}>
+                        {sub.contactEmail || sub.deliveredToEmail || 'Direct portal'}
+                        {sub.submittedAt ? ` • ${new Date(sub.submittedAt).toLocaleString()}` : ''}
+                        {' • $0.10'}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {sub.portalUrl && (
+                        <a
+                          href={sub.portalUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="chat-action-btn"
+                          style={{ padding: '6px 10px', fontSize: '12px', textDecoration: 'none' }}
+                        >
+                          Portal ↗
+                        </a>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveThreadTask({
+                            id: sub.id,
+                            receiptId: sub.receiptId,
+                            targetName: sub.targetName,
+                            category: 'JOB_APPLICATION',
+                            portalUrl: sub.portalUrl || '',
+                            contactEmail: sub.contactEmail || sub.deliveredToEmail || '',
+                            status: (['PENDING', 'SUBMITTED', 'EMAIL_SENT', 'FORM_FILLED'].includes(sub.status || '')
+                              ? sub.status
+                              : 'EMAIL_SENT') as 'PENDING' | 'SUBMITTED' | 'EMAIL_SENT' | 'FORM_FILLED',
+                            submittedAt: sub.submittedAt || new Date().toISOString(),
+                          });
+                        }}
+                        className="chat-action-btn primary"
+                        style={{ padding: '6px 12px', fontSize: '12px' }}
+                      >
+                        View Thread / Reply
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : activeMainView === 'assignments' ? (
           <AssignmentsView
             userUid={currentUser?.uid || 'guest-user'}
             candidateName={candidateName || currentUser?.displayName || ''}
@@ -3209,12 +3877,16 @@ export const App: React.FC = () => {
                                     message: `You are about to submit "${pdfName}" on behalf of ${candidateName || 'your profile'} (${candidateRole || activeConversation?.title || 'Task'}). Once confirmed, Nexora AI will dispatch your document and applications to verified endpoints.`,
                                     confirmLabel: 'Confirm & Submit',
                                     danger: false,
-                                    onConfirm: () => {
+                                    showSubmissionCountPicker: true,
+                                    agentType: activeConversation?.agentType || 'JOB_AGENT',
+                                    onConfirm: (selectedCount, selectedMode) => {
                                       setConfirmModal(null);
                                       handleSendMessage(
                                         `[Approved PDF: ${pdfName}]\nApproved. Please submit the applications now.`,
                                         activeConvId || undefined,
                                         activeConversation?.agentType || 'JOB_AGENT',
+                                        selectedCount,
+                                        selectedMode,
                                       );
                                     },
                                   });
@@ -3709,9 +4381,9 @@ export const App: React.FC = () => {
                       target="_blank"
                       rel="noreferrer"
                       className="text-xs text-cyan-400 font-semibold flex items-center gap-1"
-                      style={{ textDecoration: 'underline', color: 'green' }}
+                      style={{ textDecoration: 'underline', color: '#226331ff' }}
                     >
-                      <span>Portal Link</span>
+
                       <ExternalLink className="w-3 h-3" />
                     </a>
                     {task.contactEmail && (
@@ -4856,85 +5528,117 @@ export const App: React.FC = () => {
                   <span>Apply Edits & Regenerate PDF</span>
                 </button>
 
-                <div
-                  style={{
-                    marginBottom: '10px',
-                    padding: '8px 10px',
-                    borderRadius: '8px',
-                    background: '#181818',
-                    border: '1px solid #2e2e2e',
-                  }}
-                >
-                  <div className="flex items-center justify-between" style={{ marginBottom: '6px' }}>
-                    <span className="text-xs font-semibold text-slate-300">Submissions to Send</span>
-                    <span className="text-xs font-bold text-emerald-400">
-                      ${(
-                        submissionLimit *
-                        (() => {
-                          const activeAgent = activeConversation?.agentType || 'JOB_AGENT';
-                          const match = agentCatalog.find((a) => a.agentType === activeAgent);
-                          if (match) return match.costPerSubmissionCents / 100;
-                          if (activeAgent === 'VISA_AGENT') return 2;
-                          if (activeAgent === 'JOB_AGENT') return 0.25;
-                          return 1;
-                        })()
-                      ).toFixed(2)}
-                    </span>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                    {[1, 2, 3, 5, 10].map((num) => (
-                      <button
-                        key={num}
-                        type="button"
-                        onClick={() => setSubmissionLimit(num)}
-                        className={`chat-action-btn ${submissionLimit === num ? 'primary' : ''}`}
-                        style={{ padding: '3px 9px', fontSize: '11px', flex: 1 }}
+                {(() => {
+                  const activeAgent = activeConversation?.agentType || 'JOB_AGENT';
+                  const catalogMatch = agentCatalog.find((a) => a.agentType === activeAgent);
+                  const unitCost = catalogMatch
+                    ? catalogMatch.costPerSubmissionCents / 100
+                    : activeAgent === 'VISA_AGENT'
+                      ? 2
+                      : activeAgent === 'JOB_AGENT'
+                        ? 0.25
+                        : 1;
+                  const balanceUsd = parseFloat(walletBalanceDollars) || 0;
+                  const maxAffordable = unitCost > 0 ? Math.floor((balanceUsd + 1e-6) / unitCost) : 25;
+                  const effectiveCount = Math.min(submissionLimit, maxAffordable);
+                  const estTotal = (effectiveCount * unitCost).toFixed(2);
+                  const canAffordSelected = maxAffordable >= 1 && effectiveCount >= 1;
+
+                  return (
+                    <>
+                      <div
+                        style={{
+                          marginBottom: '10px',
+                          padding: '8px 10px',
+                          borderRadius: '8px',
+                          background: '#181818',
+                          border: '1px solid #2e2e2e',
+                        }}
                       >
-                        {num}
+                        <div className="flex items-center justify-between" style={{ marginBottom: '6px' }}>
+                          <span className="text-xs font-semibold text-slate-300">
+                            Submissions to Send (Max {maxAffordable} w/ ${walletBalanceDollars})
+                          </span>
+                          <span className="text-xs font-bold text-emerald-400">${estTotal}</span>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                          {[1, 2, 3, 5, 10].map((num) => {
+                            const disabled = num > maxAffordable;
+                            return (
+                              <button
+                                key={num}
+                                type="button"
+                                disabled={disabled}
+                                title={
+                                  disabled
+                                    ? `Requires $${(num * unitCost).toFixed(2)} (Balance: $${walletBalanceDollars})`
+                                    : `${num} submission(s) ($${(num * unitCost).toFixed(2)})`
+                                }
+                                onClick={() => setSubmissionLimit(num)}
+                                className={`chat-action-btn ${effectiveCount === num ? 'primary' : ''}`}
+                                style={{
+                                  padding: '3px 9px',
+                                  fontSize: '11px',
+                                  flex: 1,
+                                  opacity: disabled ? 0.35 : 1,
+                                  cursor: disabled ? 'not-allowed' : 'pointer',
+                                }}
+                              >
+                                {num}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        {!canAffordSelected && (
+                          <div className="text-[11px] text-amber-300 mt-2">
+                            Insufficient credits (${walletBalanceDollars}) — each submission costs ${unitCost.toFixed(2)}. Please Top Up first.
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Optional Assessment Transcript & Supporting Documents Selector */}
+                      {renderAttachmentSelector(true)}
+
+                      <button
+                        type="button"
+                        disabled={!canAffordSelected}
+                        onClick={() => {
+                          if (!canAffordSelected) return;
+                          const refName = previewPdfDoc.fileName;
+                          setPreviewPdfDoc(null);
+                          setConfirmModal({
+                            title: 'Confirm & Submit Applications',
+                            message: `You are about to submit "${refName}" on behalf of ${candidateName || 'your profile'}. Adjust your submission count below before Nexora AI dispatches your document.`,
+                            confirmLabel: 'Confirm & Submit',
+                            danger: false,
+                            showSubmissionCountPicker: true,
+                            agentType: activeConversation?.agentType || 'JOB_AGENT',
+                            onConfirm: (selectedCount, selectedMode) => {
+                              setConfirmModal(null);
+                              handleSendMessage(
+                                `[Approved PDF: ${refName}]\nApproved. Please submit the applications now.`,
+                                activeConvId || undefined,
+                                activeConversation?.agentType || 'JOB_AGENT',
+                                selectedCount,
+                                selectedMode,
+                              );
+                            },
+                          });
+                        }}
+                        className="chat-action-btn primary flex items-center justify-center gap-2"
+                        style={{
+                          width: '100%',
+                          padding: '11px',
+                          opacity: canAffordSelected ? 1 : 0.45,
+                          cursor: canAffordSelected ? 'pointer' : 'not-allowed',
+                        }}
+                      >
+                        <Check className="w-4 h-4" />
+                        <span>{canAffordSelected ? 'Approve & Submit Applications' : 'Insufficient Credits — Top Up'}</span>
                       </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Optional Assessment Transcript & Supporting Documents Selector */}
-                {renderAttachmentSelector(true)}
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    const refName = previewPdfDoc.fileName;
-                    const activeAgent = activeConversation?.agentType || 'JOB_AGENT';
-                    const catalogMatch = agentCatalog.find((a) => a.agentType === activeAgent);
-                    const unitCost = catalogMatch
-                      ? catalogMatch.costPerSubmissionCents / 100
-                      : activeAgent === 'VISA_AGENT'
-                        ? 2
-                        : activeAgent === 'JOB_AGENT'
-                          ? 0.25
-                          : 1;
-                    const estTotal = (submissionLimit * unitCost).toFixed(2);
-                    setPreviewPdfDoc(null);
-                    setConfirmModal({
-                      title: 'Confirm & Submit Applications',
-                      message: `You are about to submit "${refName}" to up to ${submissionLimit} verified target(s) (Est. $${estTotal} from your $${walletBalanceDollars} credit) on behalf of ${candidateName || 'your profile'}. Once confirmed, Nexora AI will dispatch your document.`,
-                      confirmLabel: 'Confirm & Submit',
-                      danger: false,
-                      onConfirm: () => {
-                        setConfirmModal(null);
-                        handleSendMessage(
-                          `[Approved PDF: ${refName}]\nApproved. Please submit the applications now.`,
-                          activeConvId || undefined,
-                          activeConversation?.agentType || 'JOB_AGENT',
-                        );
-                      },
-                    });
-                  }}
-                  className="chat-action-btn primary flex items-center justify-center gap-2"
-                  style={{ width: '100%', padding: '11px' }}
-                >
-                  <Check className="w-4 h-4" />
-                  <span>Approve & Submit Applications</span>
-                </button>
+                    </>
+                  );
+                })()}
               </div>
             </div>
           </div>
@@ -4970,55 +5674,854 @@ export const App: React.FC = () => {
         }}
       />
 
-      {confirmModal && (
+      {confirmModal && (() => {
+        const walletCents = Math.round(parseFloat(walletBalanceDollars || '0') * 100);
+        const modalAgent = agentCatalog.find((a) => a.agentType === (confirmModal.agentType || activeConversation?.agentType || 'JOB_AGENT'));
+        const unitCostCents = modalAgent?.costPerSubmissionCents ?? 50;
+        const maxAffordable = unitCostCents > 0 ? Math.min(100, Math.floor(walletCents / unitCostCents)) : 100;
+        const clampedCount = maxAffordable > 0 ? Math.max(1, Math.min(submissionLimit, maxAffordable)) : 0;
+        const estCostCents = clampedCount * unitCostCents;
+        const remainingCents = Math.max(0, walletCents - estCostCents);
+        const canSubmit = !confirmModal.showSubmissionCountPicker || (maxAffordable > 0 && clampedCount > 0);
+
+        return (
+          <div
+            className="auth-modal-overlay"
+            onClick={() => setConfirmModal(null)}
+            style={{ zIndex: 1100 }}
+          >
+            <div
+              className="auth-modal-card"
+              onClick={(e) => e.stopPropagation()}
+              style={{ maxWidth: '440px', padding: '24px' }}
+            >
+              <div className="flex items-center justify-between" style={{ marginBottom: '12px' }}>
+                <h3 className="font-bold text-base text-white" style={{ margin: 0 }}>
+                  {confirmModal.title}
+                </h3>
+                <button
+                  onClick={() => setConfirmModal(null)}
+                  className="sidebar-icon-btn"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <p className="text-sm text-slate-300" style={{ lineHeight: 1.5, marginBottom: '16px' }}>
+                {confirmModal.message}
+              </p>
+
+              {confirmModal.showSubmissionCountPicker && (
+                <div
+                  style={{
+                    background: 'rgba(15, 23, 42, 0.75)',
+                    border: '1px solid rgba(148, 163, 184, 0.2)',
+                    borderRadius: '12px',
+                    padding: '14px',
+                    marginBottom: '18px',
+                  }}
+                >
+                  <div className="flex items-center justify-between" style={{ marginBottom: '10px' }}>
+                    <span className="text-xs font-semibold text-slate-300 uppercase tracking-wide">
+                      Number of Submissions
+                    </span>
+                    <span className="text-xs text-slate-400">
+                      Max affordable: <strong className="text-white">{maxAffordable}</strong>
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2" style={{ marginBottom: '10px' }}>
+                    <button
+                      type="button"
+                      disabled={clampedCount <= 1}
+                      onClick={() => setSubmissionLimit(Math.max(1, clampedCount - 1))}
+                      className="chat-action-btn"
+                      style={{ padding: '6px 12px', minWidth: '36px', fontWeight: 700 }}
+                    >
+                      −
+                    </button>
+                    <input
+                      type="number"
+                      min={1}
+                      max={Math.max(1, maxAffordable)}
+                      value={clampedCount}
+                      onChange={(e) => {
+                        const raw = parseInt(e.target.value, 10);
+                        if (!Number.isNaN(raw)) {
+                          setSubmissionLimit(Math.max(1, Math.min(raw, Math.max(1, maxAffordable))));
+                        }
+                      }}
+                      style={{
+                        flex: 1,
+                        textAlign: 'center',
+                        background: 'rgba(30, 41, 59, 0.9)',
+                        border: '1px solid rgba(148, 163, 184, 0.25)',
+                        borderRadius: '8px',
+                        color: '#fff',
+                        padding: '6px 10px',
+                        fontSize: '14px',
+                        fontWeight: 700,
+                      }}
+                    />
+                    <button
+                      type="button"
+                      disabled={clampedCount >= maxAffordable}
+                      onClick={() => setSubmissionLimit(Math.min(maxAffordable, clampedCount + 1))}
+                      className="chat-action-btn"
+                      style={{ padding: '6px 12px', minWidth: '36px', fontWeight: 700 }}
+                    >
+                      +
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-2" style={{ marginBottom: '12px', flexWrap: 'wrap' }}>
+                    {[1, 5, 10, 25, 50, 100].map((preset) => {
+                      const disabledPreset = preset > maxAffordable;
+                      const activePreset = clampedCount === preset;
+                      return (
+                        <button
+                          key={preset}
+                          type="button"
+                          disabled={disabledPreset}
+                          onClick={() => setSubmissionLimit(preset)}
+                          style={{
+                            padding: '4px 10px',
+                            borderRadius: '999px',
+                            fontSize: '12px',
+                            fontWeight: 600,
+                            border: activePreset ? '1px solid #60a5fa' : '1px solid rgba(148,163,184,0.25)',
+                            background: activePreset ? 'rgba(37, 99, 235, 0.35)' : 'rgba(30, 41, 59, 0.7)',
+                            color: disabledPreset ? '#64748b' : '#f8fafc',
+                            cursor: disabledPreset ? 'not-allowed' : 'pointer',
+                            opacity: disabledPreset ? 0.5 : 1,
+                          }}
+                        >
+                          {preset} {preset === 1 ? 'job' : 'jobs'}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div style={{ marginBottom: '12px' }}>
+                    <div className="text-xs font-semibold text-slate-300 uppercase tracking-wide" style={{ marginBottom: '6px' }}>
+                      Submission Method
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px' }}>
+                      {(
+                        [
+                          { id: 'EMAIL_ONLY', label: 'Email Only', hint: 'Fastest' },
+                          { id: 'FORM_ONLY', label: 'Form Filling', hint: 'Real phone/OTP' },
+                          { id: 'BOTH', label: 'Both', hint: 'Email + Form' },
+                        ] as const
+                      ).map((opt) => {
+                        const active = submissionMode === opt.id;
+                        return (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            onClick={() => setSubmissionMode(opt.id)}
+                            style={{
+                              padding: '7px 6px',
+                              borderRadius: '8px',
+                              border: active ? '1px solid #60a5fa' : '1px solid rgba(148,163,184,0.25)',
+                              background: active ? 'rgba(37, 99, 235, 0.35)' : 'rgba(30, 41, 59, 0.7)',
+                              color: '#f8fafc',
+                              cursor: 'pointer',
+                              textAlign: 'center',
+                            }}
+                          >
+                            <div style={{ fontSize: '12px', fontWeight: 700 }}>{opt.label}</div>
+                            <div style={{ fontSize: '10px', color: '#94a3b8' }}>{opt.hint}</div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      borderTop: '1px solid rgba(148, 163, 184, 0.15)',
+                      paddingTop: '10px',
+                      fontSize: '12px',
+                      color: '#cbd5e1',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '4px',
+                    }}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span>Estimated cost ({clampedCount} × ${(unitCostCents / 100).toFixed(2)})</span>
+                      <strong className="text-white">${(estCostCents / 100).toFixed(2)}</strong>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>Wallet balance (${(walletCents / 100).toFixed(2)}) → Remaining</span>
+                      <strong style={{ color: '#34d399' }}>${(remainingCents / 100).toFixed(2)}</strong>
+                    </div>
+                    {maxAffordable === 0 && (
+                      <div style={{ color: '#f87171', marginTop: '4px', fontWeight: 600 }}>
+                        Insufficient balance. Please top up your credits to submit applications.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+                <button
+                  onClick={() => setConfirmModal(null)}
+                  className="chat-action-btn"
+                  style={{ padding: '8px 16px' }}
+                >
+                  Cancel
+                </button>
+                <button
+                  disabled={!canSubmit}
+                  onClick={() =>
+                    confirmModal.onConfirm(
+                      confirmModal.showSubmissionCountPicker ? clampedCount : undefined,
+                      confirmModal.showSubmissionCountPicker ? submissionMode : undefined,
+                    )
+                  }
+                  className="chat-action-btn primary"
+                  style={{
+                    padding: '8px 16px',
+                    background: confirmModal.danger ? '#dc2626' : '#2563eb',
+                    borderColor: confirmModal.danger ? '#ef4444' : '#3b82f6',
+                    color: '#ffffff',
+                    opacity: canSubmit ? 1 : 0.5,
+                    cursor: canSubmit ? 'pointer' : 'not-allowed',
+                  }}
+                >
+                  {confirmModal.showSubmissionCountPicker
+                    ? `${confirmModal.confirmLabel} (${clampedCount})`
+                    : confirmModal.confirmLabel}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+      {/* Missing Assessment Transcript Priority Warning Modal */}
+      {transcriptWarningPending && (
         <div
           className="auth-modal-overlay"
-          onClick={() => setConfirmModal(null)}
-          style={{ zIndex: 1100 }}
+          onClick={() => setTranscriptWarningPending(null)}
+          style={{ zIndex: 1250 }}
         >
           <div
             className="auth-modal-card"
             onClick={(e) => e.stopPropagation()}
-            style={{ maxWidth: '400px', padding: '24px' }}
+            style={{ maxWidth: '440px', padding: '24px' }}
           >
             <div className="flex items-center justify-between" style={{ marginBottom: '12px' }}>
               <h3 className="font-bold text-base text-white" style={{ margin: 0 }}>
-                {confirmModal.title}
+                ⚠️ No Assessment Transcript Attached
               </h3>
-              <button
-                onClick={() => setConfirmModal(null)}
-                className="sidebar-icon-btn"
-              >
+              <button onClick={() => setTranscriptWarningPending(null)} className="sidebar-icon-btn">
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <p className="text-sm text-slate-300" style={{ lineHeight: 1.5, marginBottom: '20px' }}>
-              {confirmModal.message}
+            <p className="text-sm text-slate-300" style={{ lineHeight: 1.55, marginBottom: '18px' }}>
+              {savedTranscripts.length === 0
+                ? 'You have not completed an assignment yet. Candidates with a Verified Assessment Transcript receive higher priority from employers and unlock verified company roles.'
+                : 'You have a Verified Assessment Transcript available, but it is not attached to this submission. Candidates with a transcript attached receive higher priority from employers.'}
             </p>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {savedTranscripts.length === 0 ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTranscriptWarningPending(null);
+                    setPendingAssignmentPrereqId(null);
+                    setActivePrereqTask(null);
+                    setActiveMainView('assignments');
+                  }}
+                  className="chat-action-btn primary"
+                  style={{
+                    padding: '10px 14px',
+                    background: '#f59e0b',
+                    borderColor: '#fbbf24',
+                    color: '#0f172a',
+                    fontWeight: 700,
+                  }}
+                >
+                  📝 Take an Assignment Now
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const latestTrn = savedTranscripts.find((t) => t.pdfFileName);
+                    if (latestTrn?.pdfFileName && !selectedAttachFileNames.includes(latestTrn.pdfFileName)) {
+                      setSelectedAttachFileNames((prev) => [...prev, latestTrn.pdfFileName]);
+                    }
+                    const mode = transcriptWarningPending.interviewInChat;
+                    setTranscriptWarningPending(null);
+                    void handleSubmitPrerequisites(
+                      { preventDefault: () => { } } as React.FormEvent,
+                      mode,
+                      true,
+                    );
+                  }}
+                  className="chat-action-btn primary"
+                  style={{
+                    padding: '10px 14px',
+                    background: '#059669',
+                    borderColor: '#10b981',
+                    color: '#ffffff',
+                    fontWeight: 700,
+                  }}
+                >
+                  ✓ Attach My Transcript &amp; Continue
+                </button>
+              )}
               <button
-                onClick={() => setConfirmModal(null)}
-                className="chat-action-btn"
-                style={{ padding: '8px 16px' }}
-              >
-                Cancel
-              </button>
-              <button
-                onClick={confirmModal.onConfirm}
-                className="chat-action-btn primary"
-                style={{
-                  padding: '8px 16px',
-                  background: confirmModal.danger ? '#dc2626' : '#2563eb',
-                  borderColor: confirmModal.danger ? '#ef4444' : '#3b82f6',
-                  color: '#ffffff',
+                type="button"
+                onClick={() => {
+                  const mode = transcriptWarningPending.interviewInChat;
+                  setTranscriptWarningPending(null);
+                  void handleSubmitPrerequisites(
+                    { preventDefault: () => { } } as React.FormEvent,
+                    mode,
+                    true,
+                  );
                 }}
+                className="chat-action-btn"
+                style={{ padding: '9px 14px' }}
               >
-                {confirmModal.confirmLabel}
+                Continue Without Transcript
               </button>
             </div>
           </div>
         </div>
       )}
+
+      {/* Autopilot Morning Scheduler Modal ($0.10/job • 10 unique jobs/day • Free 4-day follow-ups) */}
+      {showAutopilotModal && (
+        <div
+          className="auth-modal-overlay"
+          onClick={() => setShowAutopilotModal(false)}
+          style={{ zIndex: 1150 }}
+        >
+          <div
+            className="auth-modal-card"
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: '460px', padding: '24px' }}
+          >
+            <div className="flex items-center justify-between" style={{ marginBottom: '12px' }}>
+              <h3 className="font-bold text-base text-white" style={{ margin: 0 }}>
+                ⚡ Morning Autopilot &amp; Free Follow-Ups
+              </h3>
+              <button onClick={() => setShowAutopilotModal(false)} className="sidebar-icon-btn">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-sm text-slate-300" style={{ lineHeight: 1.5, marginBottom: '14px' }}>
+              Every morning at <strong>08:00</strong>, Nexora AI automatically submits up to{' '}
+              <strong>10 unique job applications</strong> at <strong>$0.10 each</strong> (zero duplicate emails) until you stop, get hired, or your balance reaches $0.00. Unanswered applications also get a <strong>free automatic follow-up after 4 days</strong>, and newly posted Nexora partner vacancies match you instantly.
+            </p>
+
+            <div
+              style={{
+                background: 'rgba(15, 23, 42, 0.75)',
+                border: '1px solid rgba(148, 163, 184, 0.2)',
+                borderRadius: '12px',
+                padding: '14px',
+                marginBottom: '16px',
+                fontSize: '12px',
+                color: '#cbd5e1',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '6px',
+              }}
+            >
+              <div className="flex items-center justify-between">
+                <span>Status</span>
+                <strong
+                  style={{
+                    color:
+                      autopilotConfig?.status === 'ACTIVE'
+                        ? '#34d399'
+                        : autopilotConfig?.status === 'HIRED'
+                          ? '#60a5fa'
+                          : autopilotConfig?.status === 'LOW_BALANCE'
+                            ? '#f87171'
+                            : '#94a3b8',
+                  }}
+                >
+                  {autopilotConfig?.status || 'PAUSED'}
+                </strong>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>Price per Autopilot submission</span>
+                <strong className="text-white">$0.10 (10 jobs/day = $1.00/day)</strong>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>Total unique companies reached</span>
+                <strong className="text-white">{autopilotConfig?.totalSubmitted ?? 0}</strong>
+              </div>
+              {autopilotConfig?.lastRunDate && (
+                <div className="flex items-center justify-between">
+                  <span>Last morning run</span>
+                  <strong className="text-white">
+                    {autopilotConfig.lastRunDate} ({autopilotConfig.lastRunSubmittedCount ?? 0} sent)
+                  </strong>
+                </div>
+              )}
+              <div className="flex items-center justify-between">
+                <span>4-Day No-Reply Auto Follow-Up</span>
+                <strong style={{ color: '#34d399' }}>FREE ($0.00)</strong>
+              </div>
+            </div>
+
+            {autopilotNotice && (
+              <div
+                style={{
+                  fontSize: '12px',
+                  color: '#93c5fd',
+                  background: 'rgba(37, 99, 235, 0.18)',
+                  border: '1px solid rgba(96, 165, 250, 0.35)',
+                  borderRadius: '8px',
+                  padding: '8px 10px',
+                  marginBottom: '14px',
+                }}
+              >
+                {autopilotNotice}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <button
+                type="button"
+                disabled={isSavingAutopilot || !currentUser?.uid}
+                onClick={async () => {
+                  if (!currentUser?.uid) return;
+                  setIsSavingAutopilot(true);
+                  setAutopilotNotice(null);
+                  try {
+                    const nextEnabled = !(autopilotConfig?.enabled && autopilotConfig?.status === 'ACTIVE');
+                    const res = await apiFetch('/api/v1/autopilot', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        userUid: currentUser.uid,
+                        enabled: nextEnabled,
+                        dailyLimit: 10,
+                      }),
+                    });
+                    const j = await res.json();
+                    if (j?.ok && j.data) {
+                      setAutopilotConfig(j.data);
+                      setAutopilotNotice(
+                        nextEnabled
+                          ? 'Autopilot enabled! Nexora will submit 10 unique applications every morning at 08:00 ($0.10 each).'
+                          : 'Autopilot paused.',
+                      );
+                    }
+                  } finally {
+                    setIsSavingAutopilot(false);
+                  }
+                }}
+                className="chat-action-btn primary"
+                style={{
+                  padding: '10px 14px',
+                  background:
+                    autopilotConfig?.enabled && autopilotConfig?.status === 'ACTIVE' ? '#475569' : '#059669',
+                  borderColor:
+                    autopilotConfig?.enabled && autopilotConfig?.status === 'ACTIVE' ? '#64748b' : '#10b981',
+                  color: '#fff',
+                  fontWeight: 700,
+                }}
+              >
+                {autopilotConfig?.enabled && autopilotConfig?.status === 'ACTIVE'
+                  ? 'Pause Morning Autopilot'
+                  : 'Enable Morning Autopilot ($0.10/job)'}
+              </button>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                <button
+                  type="button"
+                  disabled={isRunningAutopilotNow || !currentUser?.uid}
+                  onClick={async () => {
+                    if (!currentUser?.uid) return;
+                    setIsRunningAutopilotNow(true);
+                    setAutopilotNotice('Running morning Autopilot batch now (up to 10 unique jobs @ $0.10)...');
+                    try {
+                      const res = await apiFetch('/api/v1/autopilot/run-now', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ userUid: currentUser.uid }),
+                      });
+                      const j = await res.json();
+                      if (j?.ok && j.data) {
+                        if (j.data.config) setAutopilotConfig(j.data.config);
+                        if (typeof j.data.remainingBalanceCents === 'number') {
+                          setWalletBalanceDollars((j.data.remainingBalanceCents / 100).toFixed(2));
+                        }
+                        setAutopilotNotice(
+                          j.data.ran
+                            ? `Done! Submitted ${j.data.submittedCount} unique application(s) ($${(j.data.chargedCents / 100).toFixed(2)}).`
+                            : `Skipped: ${j.data.reason || 'Unable to run right now.'}`,
+                        );
+                      }
+                    } finally {
+                      setIsRunningAutopilotNow(false);
+                    }
+                  }}
+                  className="chat-action-btn"
+                  style={{ padding: '8px 12px', fontSize: '12px' }}
+                >
+                  {isRunningAutopilotNow ? 'Running...' : '▶ Run Batch Now'}
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isSavingAutopilot || !currentUser?.uid}
+                  onClick={async () => {
+                    if (!currentUser?.uid) return;
+                    setIsSavingAutopilot(true);
+                    try {
+                      const res = await apiFetch('/api/v1/autopilot', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          userUid: currentUser.uid,
+                          enabled: false,
+                          status: 'HIRED',
+                        }),
+                      });
+                      const j = await res.json();
+                      if (j?.ok && j.data) {
+                        setAutopilotConfig(j.data);
+                        setAutopilotNotice('Congratulations! Marked as HIRED and Autopilot stopped.');
+                      }
+                    } finally {
+                      setIsSavingAutopilot(false);
+                    }
+                  }}
+                  className="chat-action-btn"
+                  style={{ padding: '8px 12px', fontSize: '12px', borderColor: '#3b82f6', color: '#93c5fd' }}
+                >
+                  🎉 I Got Hired
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Interactive OTP / Email-Link / Missing Fields & Documents Modal during Live Form Filling */}
+      {pendingVerificationModal && (
+        <div
+          className="auth-modal-overlay"
+          style={{ zIndex: 1200 }}
+        >
+          <div
+            className="auth-modal-card"
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: '500px', maxHeight: '85vh', overflowY: 'auto', padding: '24px' }}
+          >
+            <div className="flex items-center justify-between" style={{ marginBottom: '12px' }}>
+              <h3 className="font-bold text-base text-white" style={{ margin: 0 }}>
+                {pendingVerificationModal.type === 'OTP'
+                  ? '🔐 Enter Verification OTP'
+                  : pendingVerificationModal.type === 'EMAIL_LINK'
+                    ? '📧 Confirm Email Verification Link'
+                    : '📝 Additional Info & Documents Needed'}
+              </h3>
+            </div>
+            <p className="text-sm text-slate-300" style={{ lineHeight: 1.55, marginBottom: '14px' }}>
+              {pendingVerificationModal.message}
+            </p>
+            <div
+              style={{
+                fontSize: '11px',
+                color: '#94a3b8',
+                background: 'rgba(15, 23, 42, 0.7)',
+                padding: '8px 10px',
+                borderRadius: '8px',
+                marginBottom: '16px',
+                wordBreak: 'break-all',
+              }}
+            >
+              Portal: {pendingVerificationModal.portalUrl}
+            </div>
+
+            {pendingVerificationModal.type === 'OTP' && (
+              <input
+                type="text"
+                placeholder="Enter 4–8 digit OTP code"
+                value={otpInputValue}
+                onChange={(e) => setOtpInputValue(e.target.value)}
+                style={{
+                  width: '100%',
+                  background: 'rgba(30, 41, 59, 0.9)',
+                  border: '1px solid rgba(148, 163, 184, 0.35)',
+                  borderRadius: '8px',
+                  color: '#fff',
+                  padding: '10px 12px',
+                  fontSize: '16px',
+                  fontWeight: 700,
+                  letterSpacing: '2px',
+                  textAlign: 'center',
+                  marginBottom: '16px',
+                }}
+              />
+            )}
+
+            {pendingVerificationModal.type === 'MISSING_INFO' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '16px' }}>
+                {(pendingVerificationModal.missingFields || []).map((field) => (
+                  <div key={field.key}>
+                    <label
+                      style={{
+                        display: 'block',
+                        fontSize: '12px',
+                        fontWeight: 600,
+                        color: '#cbd5e1',
+                        marginBottom: '4px',
+                      }}
+                    >
+                      {field.label}
+                    </label>
+                    {field.inputType === 'select' && field.options && field.options.length > 0 ? (
+                      <select
+                        value={missingFieldValues[field.key] || ''}
+                        onChange={(e) =>
+                          setMissingFieldValues((prev) => ({ ...prev, [field.key]: e.target.value }))
+                        }
+                        style={{
+                          width: '100%',
+                          background: 'rgba(30, 41, 59, 0.9)',
+                          border: '1px solid rgba(148, 163, 184, 0.3)',
+                          borderRadius: '8px',
+                          color: '#fff',
+                          padding: '8px 10px',
+                          fontSize: '13px',
+                        }}
+                      >
+                        <option value="">Select an option...</option>
+                        {field.options.map((opt) => (
+                          <option key={opt} value={opt}>
+                            {opt}
+                          </option>
+                        ))}
+                      </select>
+                    ) : field.inputType === 'textarea' ? (
+                      <textarea
+                        rows={3}
+                        placeholder={field.placeholder || `Enter ${field.label}`}
+                        value={missingFieldValues[field.key] || ''}
+                        onChange={(e) =>
+                          setMissingFieldValues((prev) => ({ ...prev, [field.key]: e.target.value }))
+                        }
+                        style={{
+                          width: '100%',
+                          background: 'rgba(30, 41, 59, 0.9)',
+                          border: '1px solid rgba(148, 163, 184, 0.3)',
+                          borderRadius: '8px',
+                          color: '#fff',
+                          padding: '8px 10px',
+                          fontSize: '13px',
+                        }}
+                      />
+                    ) : (
+                      <input
+                        type="text"
+                        placeholder={field.placeholder || `Enter ${field.label}`}
+                        value={missingFieldValues[field.key] || ''}
+                        onChange={(e) =>
+                          setMissingFieldValues((prev) => ({ ...prev, [field.key]: e.target.value }))
+                        }
+                        style={{
+                          width: '100%',
+                          background: 'rgba(30, 41, 59, 0.9)',
+                          border: '1px solid rgba(148, 163, 184, 0.3)',
+                          borderRadius: '8px',
+                          color: '#fff',
+                          padding: '8px 10px',
+                          fontSize: '13px',
+                        }}
+                      />
+                    )}
+                  </div>
+                ))}
+
+                {(pendingVerificationModal.missingDocuments || []).map((doc) => {
+                  const uploaded = missingDocUploads[doc.key];
+                  const isDrafting = Boolean(missingDocDrafts[doc.key]);
+                  return (
+                    <div
+                      key={doc.key}
+                      style={{
+                        background: 'rgba(15, 23, 42, 0.75)',
+                        border: '1px solid rgba(148, 163, 184, 0.25)',
+                        borderRadius: '10px',
+                        padding: '12px',
+                      }}
+                    >
+                      <div style={{ fontSize: '13px', fontWeight: 700, color: '#f8fafc', marginBottom: '4px' }}>
+                        📄 {doc.label}
+                      </div>
+                      <div style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '10px' }}>
+                        Do you have this document ready, or should Nexora AI draft it for you?
+                      </div>
+                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+                        <label
+                          style={{
+                            padding: '6px 12px',
+                            borderRadius: '8px',
+                            fontSize: '12px',
+                            fontWeight: 600,
+                            border: uploaded ? '1px solid #34d399' : '1px solid rgba(148,163,184,0.3)',
+                            background: uploaded ? 'rgba(16, 185, 129, 0.2)' : 'rgba(30, 41, 59, 0.85)',
+                            color: '#f8fafc',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          {uploaded ? `✓ ${uploaded.fileName}` : 'Upload Document'}
+                          <input
+                            type="file"
+                            accept={doc.accept || '.pdf,.doc,.docx'}
+                            style={{ display: 'none' }}
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (!file) return;
+                              const reader = new FileReader();
+                              reader.onload = () => {
+                                const dataUrl = String(reader.result || '');
+                                const base64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+                                setMissingDocUploads((prev) => ({
+                                  ...prev,
+                                  [doc.key]: { fileName: file.name, contentBase64: base64 },
+                                }));
+                                setMissingDocDrafts((prev) => ({ ...prev, [doc.key]: false }));
+                              };
+                              reader.readAsDataURL(file);
+                            }}
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setMissingDocDrafts((prev) => ({ ...prev, [doc.key]: !prev[doc.key] }));
+                            setMissingDocUploads((prev) => {
+                              const next = { ...prev };
+                              delete next[doc.key];
+                              return next;
+                            });
+                          }}
+                          style={{
+                            padding: '6px 12px',
+                            borderRadius: '8px',
+                            fontSize: '12px',
+                            fontWeight: 600,
+                            border: isDrafting ? '1px solid #a78bfa' : '1px solid rgba(148,163,184,0.3)',
+                            background: isDrafting ? 'rgba(139, 92, 246, 0.3)' : 'rgba(30, 41, 59, 0.85)',
+                            color: '#f8fafc',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          {isDrafting ? '✓ Nexora AI Will Draft It' : '✨ Draft with Nexora AI'}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+              <button
+                type="button"
+                disabled={isSubmittingVerification}
+                onClick={async () => {
+                  setIsSubmittingVerification(true);
+                  try {
+                    await apiFetch(
+                      `/api/v1/webchat/job/${encodeURIComponent(pendingVerificationModal.jobId)}/verify`,
+                      {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          verificationId: pendingVerificationModal.id,
+                          skipped: true,
+                        }),
+                      },
+                    );
+                  } finally {
+                    setIsSubmittingVerification(false);
+                    setOtpInputValue('');
+                    setMissingFieldValues({});
+                    setMissingDocUploads({});
+                    setMissingDocDrafts({});
+                    setPendingVerificationModal(null);
+                  }
+                }}
+                className="chat-action-btn"
+                style={{ padding: '8px 14px' }}
+              >
+                Skip Portal
+              </button>
+              <button
+                type="button"
+                disabled={
+                  isSubmittingVerification ||
+                  (pendingVerificationModal.type === 'OTP' && !otpInputValue.trim())
+                }
+                onClick={async () => {
+                  setIsSubmittingVerification(true);
+                  try {
+                    const draftKeys = Object.entries(missingDocDrafts)
+                      .filter(([, v]) => v)
+                      .map(([k]) => k);
+                    await apiFetch(
+                      `/api/v1/webchat/job/${encodeURIComponent(pendingVerificationModal.jobId)}/verify`,
+                      {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          verificationId: pendingVerificationModal.id,
+                          ...(pendingVerificationModal.type === 'OTP'
+                            ? { otpCode: otpInputValue.trim() }
+                            : pendingVerificationModal.type === 'EMAIL_LINK'
+                              ? { confirmed: true }
+                              : {
+                                confirmed: true,
+                                fieldValues: missingFieldValues,
+                                uploadedDocuments: missingDocUploads,
+                                draftDocuments: draftKeys,
+                              }),
+                        }),
+                      },
+                    );
+                  } finally {
+                    setIsSubmittingVerification(false);
+                    setOtpInputValue('');
+                    setMissingFieldValues({});
+                    setMissingDocUploads({});
+                    setMissingDocDrafts({});
+                    setPendingVerificationModal(null);
+                  }
+                }}
+                className="chat-action-btn primary"
+                style={{
+                  padding: '8px 16px',
+                  background: '#2563eb',
+                  borderColor: '#3b82f6',
+                  color: '#ffffff',
+                }}
+              >
+                {pendingVerificationModal.type === 'OTP'
+                  ? 'Submit OTP & Continue'
+                  : pendingVerificationModal.type === 'EMAIL_LINK'
+                    ? "I've Clicked the Link — Continue"
+                    : 'Submit Info & Continue'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* G. Submission Follow-Up Chat Modal (WhatsApp-style UI) */}
       {activeThreadTask && (
         <div

@@ -6,16 +6,24 @@ import { platformStore } from '../modules/platform/platform.store';
 import { promisify } from 'util';
 import { AgentType } from '../database/types';
 import { logger } from '../utils/logger';
+import pdfParse from 'pdf-parse';
 import { sendApplicationEmailOnBehalfOfUser } from './email.service';
 import { downloadFromFirebaseStorage } from './firebase-storage.service';
 import { imapMonitorService } from './imap-monitor.service';
-import { jobSearchApiService } from './job-search-api.service';
+import { extractEmailFromText, isValidCompanyEmail, jobSearchApiService } from './job-search-api.service';
+import {
+  discoverAgentTargetsWithAI,
+  extractCvJobProfileWithAI,
+  generateTailoredPitchesBatchWithAI,
+} from './cv-ai-matcher.service';
 import { visaRelocationService } from './visa-relocation.service';
 import { scholarshipDiscoveryService } from './scholarship-discovery.service';
 import { investorDiscoveryService } from './investor-discovery.service';
 import {
   browserFormFillerService,
   type BrowserFormFillResult,
+  type InteractiveVerificationRequest,
+  type InteractiveVerificationResponse,
 } from './browser-form-filler.service';
 import {
   documentGeneratorService,
@@ -88,6 +96,105 @@ export interface AutonomousWorkExecutionReport {
 export class AutonomousWorkerService {
   private readonly submissionsDir: string;
   private readonly sessionAttachments = new Map<string, Array<{ filename: string; path: string }>>();
+  private readonly sessionConversationIds = new Map<string, string>();
+  private readonly sessionUserUids = new Map<string, string>();
+  private readonly sessionSubmissionModes = new Map<string, 'EMAIL_ONLY' | 'FORM_ONLY' | 'BOTH'>();
+  private readonly sessionRealContacts = new Map<string, { email?: string; phone?: string }>();
+  private readonly sessionExclusions = new Map<string, { emails: Set<string>; companies: Set<string> }>();
+  private readonly sessionVerificationCallbacks = new Map<
+    string,
+    (req: InteractiveVerificationRequest) => Promise<InteractiveVerificationResponse>
+  >();
+  private readonly sessionProgressCallbacks = new Map<
+    string,
+    (update: { phase: string; sentCount: number; totalTarget: number; latestTarget?: string }) => void
+  >();
+
+  public registerSessionSubmissionMode(
+    customerId: string,
+    mode?: 'EMAIL_ONLY' | 'FORM_ONLY' | 'BOTH',
+  ): void {
+    if (customerId && mode) this.sessionSubmissionModes.set(customerId, mode);
+  }
+
+  public registerSessionRealContact(
+    customerId: string,
+    contact: { email?: string; phone?: string },
+  ): void {
+    if (customerId) this.sessionRealContacts.set(customerId, contact);
+  }
+
+  public registerVerificationCallback(
+    customerId: string,
+    cb: (req: InteractiveVerificationRequest) => Promise<InteractiveVerificationResponse>,
+  ): void {
+    if (customerId) this.sessionVerificationCallbacks.set(customerId, cb);
+  }
+
+  public clearVerificationCallback(customerId: string): void {
+    if (customerId) this.sessionVerificationCallbacks.delete(customerId);
+  }
+
+  public registerSessionExclusions(
+    customerId: string,
+    exclusions: { emails?: string[]; companies?: string[] },
+  ): void {
+    if (!customerId) return;
+    this.sessionExclusions.set(customerId, {
+      emails: new Set((exclusions.emails || []).map((e) => e.trim().toLowerCase()).filter(Boolean)),
+      companies: new Set(
+        (exclusions.companies || [])
+          .map((c) => c.trim().toLowerCase().replace(/[^a-z0-9]/g, ''))
+          .filter((c) => c.length >= 3),
+      ),
+    });
+  }
+
+  public clearSessionExclusions(customerId: string): void {
+    if (customerId) this.sessionExclusions.delete(customerId);
+  }
+
+  public registerProgressCallback(
+    customerId: string,
+    cb: (update: { phase: string; sentCount: number; totalTarget: number; latestTarget?: string }) => void,
+  ): void {
+    if (customerId) this.sessionProgressCallbacks.set(customerId, cb);
+  }
+
+  public clearProgressCallback(customerId: string): void {
+    if (customerId) this.sessionProgressCallbacks.delete(customerId);
+  }
+
+  private emitProgress(
+    customerId: string,
+    update: { phase: string; sentCount: number; totalTarget: number; latestTarget?: string },
+  ): void {
+    const cb = this.sessionProgressCallbacks.get(customerId);
+    if (cb) {
+      try {
+        cb(update);
+      } catch {
+        // non-fatal
+      }
+    }
+  }
+
+  public registerSessionConversation(customerId: string, conversationId?: string): void {
+    if (customerId && conversationId) {
+      this.sessionConversationIds.set(customerId, conversationId);
+    }
+  }
+
+  public registerSessionUserUid(customerId: string, userUid?: string): void {
+    if (customerId && userUid) {
+      this.sessionUserUids.set(customerId, userUid);
+    }
+  }
+
+  public getSessionUserUid(customerId?: string): string | undefined {
+    if (!customerId) return undefined;
+    return this.sessionUserUids.get(customerId);
+  }
 
   constructor(submissionsDir?: string) {
     this.submissionsDir =
@@ -328,6 +435,43 @@ export class AutonomousWorkerService {
       }
     }
 
+    // 0b. Extract text from uploaded Supporting Docs CV (always parse unless parsed CV text is already in allTexts)
+    if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
+      await platformStore.syncFromFirebase();
+    }
+    const resolvedUidForDocs = this.sessionUserUids.get(params.customerId) || params.customerId;
+    const supportingCvForSearch = platformStore
+      .getState()
+      .supportingDocuments.find(
+        (d) =>
+          (d.userUid === resolvedUidForDocs || d.userUid === params.customerId) &&
+          d.docType === 'CV',
+      );
+    if (supportingCvForSearch && !allTexts.some((t) => t.includes('[Uploaded CV ('))) {
+      try {
+        const cachePath = path.resolve(
+          process.cwd(),
+          'node_modules',
+          '.cache',
+          'nexora-documents',
+          supportingCvForSearch.storedFileName,
+        );
+        let cvBuf: Buffer | null = await fs.readFile(cachePath).catch(() => null);
+        if (!cvBuf) {
+          const remote = await downloadFromFirebaseStorage(`documents/${supportingCvForSearch.storedFileName}`);
+          if (remote?.buffer) cvBuf = remote.buffer;
+        }
+        if (cvBuf && supportingCvForSearch.fileName.toLowerCase().endsWith('.pdf')) {
+          const parsedCv = await pdfParse(cvBuf).catch(() => null);
+          if (parsedCv?.text?.trim()) {
+            allTexts.push(`[Uploaded CV (${supportingCvForSearch.fileName})]:\n${parsedCv.text.slice(0, 8000)}`);
+          }
+        }
+      } catch {
+        // non-fatal
+      }
+    }
+
     // 1. Scrape any customer-provided URLs
     const urls = this.extractUrls(allTexts);
     const scrapedCustomerSites: ScrapedWebPage[] = [];
@@ -360,17 +504,129 @@ export class AutonomousWorkerService {
         /\b(?:senior\s+software\s+developer|senior\s+software\s+engineer|software\s+developer|software\s+engineer|react\s+developer|full[- ]stack\s+developer|mobile\s+developer|cleaner|cleaning|construction|accountant|nurse|driver|electrician|plumber|security|admin|sales|marketing)\b/i,
       );
       const extractedRole = (formRoleMatch?.[1] || roleMatch?.[0] || 'Software Developer').trim();
-      const skills = ['React', 'JavaScript', 'TypeScript', 'React Native', 'AWS', 'Node.js', 'Python', 'Java'].filter(
-        (s) => joined.toLowerCase().includes(s.toLowerCase()),
-      );
+      const skills = [
+        'React Native',
+        'React',
+        'TypeScript',
+        'JavaScript',
+        'Node.js',
+        'Next.js',
+        'Expo',
+        'iOS',
+        'Android',
+        'Mobile',
+        'Flutter',
+        'Swift',
+        'Kotlin',
+        'Vue',
+        'Angular',
+        'Python',
+        'Django',
+        'Java',
+        'Spring',
+        'C#',
+        '.NET',
+        'Ruby',
+        'Rails',
+        'PHP',
+        'Laravel',
+        'Golang',
+        'Rust',
+        'AWS',
+        'Firebase',
+        'PostgreSQL',
+        'MongoDB',
+        'Docker',
+        'Kubernetes',
+        'GraphQL',
+        'REST',
+      ].filter((s) => {
+        const escaped = s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        return new RegExp(`(?:^|[^a-z0-9])${escaped}(?:$|[^a-z0-9])`, 'i').test(joined);
+      });
+
+      const cvYearsMatch = joined.match(/\b(\d{1,2})\+?\s+years?(?:\s+of)?\s+experience\b/i);
+      let candidateYearsExperience = cvYearsMatch?.[1] ? Number(cvYearsMatch[1]) : undefined;
+      const cvBlockForSearch = joined.match(/\[Uploaded CV[^\]]*\]:\s*([\s\S]+)/i)?.[1];
+      const additionalNotesForSearch = joined.match(
+        /(?:Additional\s+Notes(?:\s*\/\s*Context)?|Cover\s+Letter|Applicant\s+Notes)\s*:\s*([^\n]+(?:\n(?!\[|[A-Z][a-zA-Z\s/]{2,30}:)[^\n]+)*)/i,
+      )?.[1]?.trim();
+
+      // Feed the candidate's CV + Target Role + Additional Notes to OpenClaw to generate 3+ exact matching job titles!
+      let effectiveSearchRole = extractedRole;
+      let effectiveSearchTitles: string[] | undefined;
+      let effectiveSkills = skills;
+      let effectiveIsTechRole: boolean | undefined;
+      let effectiveRecommendedEmployers: Array<{ name: string; websiteUrl: string }> | undefined;
+      if (cvBlockForSearch && process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
+        this.emitProgress(params.customerId, {
+          phase: 'OpenClaw analyzing your CV & generating matching job titles...',
+          sentCount: 0,
+          totalTarget: params.maxSubmissions ?? 5,
+        });
+        const aiProfile = await extractCvJobProfileWithAI(
+          cvBlockForSearch,
+          extractedRole,
+          additionalNotesForSearch,
+          params.customerId,
+          params.targetCountry,
+        );
+        if (aiProfile) {
+          effectiveSearchRole = aiProfile.primaryTitle || extractedRole;
+          effectiveSearchTitles = aiProfile.matchingTitles;
+          effectiveIsTechRole = aiProfile.isTechRole;
+          effectiveRecommendedEmployers = aiProfile.recommendedEmployers;
+          this.emitProgress(params.customerId, {
+            phase: `OpenClaw matched ${aiProfile.matchingTitles.length} job titles & ${aiProfile.recommendedEmployers?.length ?? 0} employers — searching & scraping verified emails...`,
+            sentCount: 0,
+            totalTarget: params.maxSubmissions ?? 5,
+          });
+          if (aiProfile.coreSkills.length > 0) {
+            effectiveSkills = Array.from(new Set([...aiProfile.coreSkills, ...skills])).slice(0, 18);
+          }
+          if (aiProfile.yearsExperience) {
+            candidateYearsExperience = aiProfile.yearsExperience;
+          }
+          if (aiProfile.professionalSummary) {
+            allTexts.push(`[AI CV Profile Summary]: ${aiProfile.professionalSummary}`);
+          }
+          logger.info(
+            {
+              aiPrimaryTitle: aiProfile.primaryTitle,
+              aiMatchingTitles: aiProfile.matchingTitles,
+              aiYears: aiProfile.yearsExperience,
+              aiSkillCount: aiProfile.coreSkills.length,
+              aiEmployersCount: aiProfile.recommendedEmployers?.length ?? 0,
+            },
+            'OpenClaw extracted job search titles & profile from uploaded CV',
+          );
+        }
+      }
 
       let apiTargets: DiscoveredPlatformTarget[] = [];
       if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
+        const requestedSubmissions = Math.max(params.maxSubmissions ?? 5, 1);
+        // Request exact target + small 20% buffer (min +2) so we hit 100% of requestedSubmissions without overscraping
+        const searchBufferLimit = Math.min(115, requestedSubmissions + Math.max(2, Math.ceil(requestedSubmissions * 0.2)));
+        const submissionMode = this.sessionSubmissionModes.get(params.customerId) || 'EMAIL_ONLY';
         const apiRes = await jobSearchApiService.searchJobs({
-          role: extractedRole,
-          skills: skills.length > 0 ? skills : undefined,
+          role: effectiveSearchRole,
+          searchTitles: effectiveSearchTitles,
+          skills: effectiveSkills.length > 0 ? effectiveSkills : undefined,
+          candidateYearsExperience,
+          cvText: cvBlockForSearch,
+          isTechRole: effectiveIsTechRole,
+          recommendedEmployers: submissionMode === 'FORM_ONLY' ? undefined : effectiveRecommendedEmployers,
           targetCountry: params.targetCountry,
-          limit: 10,
+          limit: searchBufferLimit,
+          requireVerifiedEmail: submissionMode !== 'FORM_ONLY',
+          onProgress: (phase) => {
+            this.emitProgress(params.customerId, {
+              phase,
+              sentCount: 0,
+              totalTarget: requestedSubmissions,
+            });
+          },
         });
         apiTargets = apiRes.jobs
           .filter((j) => Boolean(j.contactEmail) || j.source !== 'adzuna')
@@ -411,54 +667,199 @@ export class AutonomousWorkerService {
       const visaRoleMatch =
         joined.match(/applying for a job\s*\(\s*([^)]+?)\s+in\s+[^)]+\)/i) ||
         joined.match(/(?:^|\n)\s*(?:Target\s+(?:Job\s+)?Role|Profession|Job\s+Title)\s*:\s*([^\n|]+)/i);
-      const skills = ['React', 'JavaScript', 'TypeScript', 'React Native', 'AWS', 'Node.js', 'Python', 'Java'].filter(
-        (s) => joined.toLowerCase().includes(s.toLowerCase()),
-      );
+      const skills = [
+        'React Native',
+        'React',
+        'TypeScript',
+        'JavaScript',
+        'Node.js',
+        'Next.js',
+        'Expo',
+        'iOS',
+        'Android',
+        'Mobile',
+        'Flutter',
+        'Swift',
+        'Kotlin',
+        'Vue',
+        'Angular',
+        'Python',
+        'Django',
+        'Java',
+        'Spring',
+        'C#',
+        '.NET',
+        'Ruby',
+        'Rails',
+        'PHP',
+        'Laravel',
+        'Golang',
+        'Rust',
+        'AWS',
+        'Firebase',
+        'PostgreSQL',
+        'MongoDB',
+        'Docker',
+        'Kubernetes',
+        'GraphQL',
+        'REST',
+      ].filter((s) => {
+        const escaped = s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        return new RegExp(`(?:^|[^a-z0-9])${escaped}(?:$|[^a-z0-9])`, 'i').test(joined);
+      });
+      const requestedVisa = Math.max(params.maxSubmissions ?? 5, 1);
       const relocationData = await visaRelocationService.discoverRelocationTargets({
-        role: visaRoleMatch?.[1]?.trim() || 'Software Developer',
+        role: visaRoleMatch?.[1]?.trim() || 'Skilled Professional',
         skills: skills.length > 0 ? skills : undefined,
         destinationCountry: params.targetCountry || 'Germany',
-        limit: 8,
+        limit: Math.max(8, requestedVisa),
       });
       if (relocationData.targets.length > 0) {
         rawTargets = relocationData.targets;
       }
     } else if (params.agentType === AgentType.EDUCATION_AGENT) {
       const joined = allTexts.join(' ');
+      const requestedEdu = Math.max(params.maxSubmissions ?? 5, 1);
       const studyLevelMatch = joined.match(/\b(phd|doctorate|master'?s?|msc|mba|bachelor'?s?|undergraduate)\b/i);
       const scholarshipTargets = await scholarshipDiscoveryService.discoverScholarships({
         fieldOfStudy: joined.match(/\b(computer science|software|ai|artificial intelligence|engineering|data science|business|medicine|finance)\b/i)?.[0],
         studyLevel: studyLevelMatch?.[0] || "Master's",
         targetCountry: params.targetCountry,
-        limit: 8,
+        limit: Math.max(8, requestedEdu),
       });
       if (scholarshipTargets.length > 0) {
         rawTargets = scholarshipTargets;
       }
     } else if (params.agentType === AgentType.INVESTOR_AGENT) {
       const joined = allTexts.join(' ');
+      const requestedInv = Math.max(params.maxSubmissions ?? 5, 1);
       const stageMatch = joined.match(/\b(pre-seed|seed|series a|idea|mvp|growth)\b/i);
       const investorTargets = await investorDiscoveryService.discoverInvestors({
         industry: joined.match(/\b(fintech|ai|saas|healthtech|agritech|climate|commerce|software)\b/i)?.[0] || 'AI & Software',
         fundingStage: stageMatch?.[0] || 'Seed',
         targetCountry: params.targetCountry,
-        limit: 8,
+        limit: Math.max(8, requestedInv),
       });
       if (investorTargets.length > 0) {
         rawTargets = investorTargets;
       }
     }
 
+    // For VISA_AGENT, EDUCATION_AGENT, and INVESTOR_AGENT: if requestedSubmissions exceeds static/initial verified targets,
+    // dynamically discover additional real organizations via OpenClaw and scrape their live sites for verified emails!
+    if (
+      process.env.NODE_ENV !== 'test' &&
+      !process.env.VITEST &&
+      (params.agentType === AgentType.VISA_AGENT ||
+        params.agentType === AgentType.EDUCATION_AGENT ||
+        params.agentType === AgentType.INVESTOR_AGENT)
+    ) {
+      const requestedCount = Math.max(params.maxSubmissions ?? 5, 1);
+      const agentSubmissionMode = this.sessionSubmissionModes.get(params.customerId) || 'EMAIL_ONLY';
+      const countValid = () =>
+        agentSubmissionMode === 'FORM_ONLY'
+          ? rawTargets.filter((t) => Boolean(t.applicationUrl && /^https?:\/\//i.test(t.applicationUrl))).length
+          : rawTargets.filter((t) => isValidCompanyEmail(t.contactEmail)).length;
+      const maxRounds = Math.min(10, Math.ceil(requestedCount / 8) + 1);
+      const discoveryDeadlineMs = Date.now() + Math.min(360_000, Math.max(90_000, requestedCount * 10_000));
+      const triedNames = new Set(rawTargets.map((t) => t.name));
+
+      for (let round = 1; round <= maxRounds && countValid() < requestedCount && Date.now() < discoveryDeadlineMs; round++) {
+        this.emitProgress(params.customerId, {
+          phase: `Discovering matching organizations (${countValid()} / ${requestedCount} ready — round ${round})...`,
+          sentCount: 0,
+          totalTarget: requestedCount,
+        });
+        const aiTargets = await discoverAgentTargetsWithAI({
+          agentType: params.agentType,
+          contextSummary: allTexts.join('\n').slice(0, 2800),
+          targetCountry: params.targetCountry,
+          excludeNames: Array.from(triedNames),
+          batchSize: Math.min(30, Math.max(15, (requestedCount - countValid()) * 3)),
+          customerId: params.customerId,
+        });
+        if (aiTargets.length === 0) break;
+        aiTargets.forEach((t) => triedNames.add(t.name));
+
+        const CHUNK = 10;
+        for (let i = 0; i < aiTargets.length && countValid() < requestedCount; i += CHUNK) {
+          const slice = aiTargets.slice(i, i + CHUNK);
+          const scraped = await Promise.allSettled(
+            slice.map(async (item) => {
+              if (agentSubmissionMode === 'FORM_ONLY') {
+                return {
+                  name: item.name,
+                  category: item.category,
+                  portalUrl: item.websiteUrl,
+                  applicationUrl: item.websiteUrl,
+                  focusSummary: item.focusSummary || `Verified ${item.category}`,
+                  checkSizeOrBenefit: 'Direct Web Form Application',
+                  liveReachable: true,
+                } satisfies DiscoveredPlatformTarget;
+              }
+              let origin = '';
+              try {
+                origin = new URL(item.websiteUrl).origin;
+              } catch {
+                return null;
+              }
+              const subPaths =
+                params.agentType === AgentType.EDUCATION_AGENT
+                  ? ['/admissions', '/scholarships', '/contact']
+                  : params.agentType === AgentType.INVESTOR_AGENT
+                    ? ['/apply', '/pitch', '/contact']
+                    : ['/careers', '/contact', '/apply'];
+              const [p1, p2, p3, homeProbe] = await Promise.all([
+                this.scrapeUrl(`${origin}${subPaths[0]}`, 3000),
+                this.scrapeUrl(`${origin}${subPaths[1]}`, 3000),
+                this.scrapeUrl(`${origin}${subPaths[2]}`, 3000),
+                this.scrapeUrl(item.websiteUrl, 3500),
+              ]);
+              let email: string | undefined;
+              for (const probe of [p1, p2, p3, homeProbe]) {
+                const candidate = extractEmailFromText(probe.textSnippet || '');
+                if (isValidCompanyEmail(candidate)) {
+                  email = candidate;
+                  break;
+                }
+              }
+              if (!isValidCompanyEmail(email)) return null;
+              return {
+                name: item.name,
+                category: item.category,
+                portalUrl: item.websiteUrl,
+                applicationUrl: item.websiteUrl,
+                contactEmail: email,
+                focusSummary: item.focusSummary || `Verified ${item.category}`,
+                checkSizeOrBenefit: 'Direct Application + Email',
+                liveReachable: true,
+              } satisfies DiscoveredPlatformTarget;
+            }),
+          );
+          for (const r of scraped) {
+            if (r.status === 'fulfilled' && r.value) {
+              rawTargets.push(r.value);
+            }
+          }
+          this.emitProgress(params.customerId, {
+            phase: `Round ${round}: Found ${countValid()} / ${requestedCount} verified organizations...`,
+            sentCount: 0,
+            totalTarget: requestedCount,
+          });
+        }
+      }
+    }
+
     const discoveredTargets: DiscoveredPlatformTarget[] = await Promise.all(
       rawTargets.map(async (target) => {
+        if (isValidCompanyEmail(target.contactEmail) && target.liveReachable) {
+          return target;
+        }
         const probe = await this.scrapeUrl(target.applicationUrl, 5000);
-        // If a real email address appears on the scraped job page, prefer it!
-        const pageEmailMatch = probe.textSnippet?.match(
-          /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/,
-        )?.[0];
+        const pageEmailMatch = extractEmailFromText(probe.textSnippet || '');
         return {
           ...target,
-          contactEmail: pageEmailMatch || target.contactEmail,
+          contactEmail: isValidCompanyEmail(pageEmailMatch) ? pageEmailMatch : target.contactEmail,
           liveReachable: probe.statusCode >= 200 && probe.statusCode < 500,
           httpStatus: probe.statusCode || 200,
           scrapedTitle:
@@ -549,7 +950,44 @@ export class AutonomousWorkerService {
       (extractedPhoneMatch?.[1] ? extractedPhoneMatch[1].replace(/\s+/g, '') : '') ||
       cleanParamPhone;
 
-    if (!generatedDocument && !userProvidedExistingDoc && params.agentType === AgentType.JOB_AGENT) {
+    const supportingCv = platformStore
+      .getState()
+      .supportingDocuments.find(
+        (d) =>
+          (d.userUid === resolvedUidForDocs || d.userUid === params.customerId) &&
+          d.docType === 'CV',
+      );
+    const sessionCv = (this.sessionAttachments.get(params.customerId) ?? []).find((a) =>
+      /\.pdf$/i.test(a.filename),
+    );
+    if (!generatedDocument && (supportingCv || sessionCv) && params.agentType === AgentType.JOB_AGENT) {
+      const cvFileName = supportingCv?.fileName || sessionCv!.filename;
+      const cvPath = supportingCv
+        ? path.resolve(process.cwd(), 'node_modules', '.cache', 'nexora-documents', supportingCv.storedFileName)
+        : sessionCv!.path;
+      // Ensure local file exists for SMTP email attachment (download from Firebase Storage if missing on disk)
+      if (supportingCv) {
+        const existsLocally = await fs.stat(cvPath).then(() => true).catch(() => false);
+        if (!existsLocally) {
+          const remote = await downloadFromFirebaseStorage(`documents/${supportingCv.storedFileName}`);
+          if (remote?.buffer) {
+            await fs.mkdir(path.dirname(cvPath), { recursive: true });
+            await fs.writeFile(cvPath, remote.buffer).catch(() => undefined);
+          }
+        }
+      }
+      generatedDocument = {
+        fileName: cvFileName,
+        filePath: cvPath,
+        fileSizeBytes: supportingCv?.fileSizeBytes || 0,
+        estimatedPages: 1,
+        downloadUrl:
+          supportingCv?.downloadUrl || `/api/v1/documents/download/${encodeURIComponent(cvFileName)}`,
+        createdAt: supportingCv?.createdAt || new Date().toISOString(),
+      };
+    }
+
+    if (!generatedDocument && !userProvidedExistingDoc && !supportingCv && !sessionCv && params.agentType === AgentType.JOB_AGENT) {
       try {
         const joinedText = allTexts.join(' ');
         const roleMatch = joinedText.match(
@@ -612,7 +1050,20 @@ export class AutonomousWorkerService {
     }
 
     // 4. Automatically prepare & submit applications / outreach across discovered platforms
-    const submissionLimit = Math.max(1, Math.min(25, params.maxSubmissions ?? 5));
+    const submissionLimit =
+      params.maxSubmissions === 0
+        ? 0
+        : Math.max(1, Math.min(25, params.maxSubmissions ?? 5));
+    if (submissionLimit === 0) {
+      return {
+        agentType: params.agentType,
+        scrapedCustomerSites: [],
+        liveSearchResults: [],
+        discoveredTargets: [],
+        submittedApplications: [],
+        receiptFilePath: '',
+      };
+    }
     const submittedApplications = await this.submitApplicationsOnBehalfOfUser({
       customerId: params.customerId,
       agentType: params.agentType,
@@ -644,6 +1095,41 @@ export class AutonomousWorkerService {
     await fs
       .writeFile(receiptFilePath, JSON.stringify(report, null, 2), 'utf8')
       .catch((err) => logger.warn({ err }, 'Could not write submission receipt file'));
+
+    if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
+      const docId = `sub-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      const projectId = process.env.FIREBASE_PROJECT_ID || 'nexora-d7346';
+      const apiKey = process.env.FIREBASE_API_KEY || 'AIzaSyBjRi92-GpP71HcBUUXknw3vPhX3lSh7dk';
+      const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/nexora_submissions/${encodeURIComponent(docId)}?key=${apiKey}`;
+      void fetch(url, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fields: {
+            id: { stringValue: docId },
+            conversationId: {
+              stringValue: String(this.sessionConversationIds.get(params.customerId) || ''),
+            },
+            agentType: { stringValue: String(params.agentType) },
+            customerId: { stringValue: String(params.customerId) },
+            customerName: { stringValue: String(params.customerName || 'Applicant') },
+            customerEmail: { stringValue: String(resolvedCustomerEmail || '') },
+            submittedCount: { integerValue: String(submittedApplications.length) },
+            targets: {
+              arrayValue: {
+                values: submittedApplications.map((s) => ({
+                  stringValue: `${s.targetName} (${s.receiptId})`,
+                })),
+              },
+            },
+            generatedFileName: { stringValue: String(generatedDocument?.fileName || '') },
+            generatedDownloadUrl: { stringValue: String(generatedDocument?.downloadUrl || '') },
+            createdAt: { stringValue: new Date().toISOString() },
+          },
+        }),
+        signal: AbortSignal.timeout(5000),
+      }).catch(() => undefined);
+    }
 
     return report;
   }
@@ -907,12 +1393,112 @@ export class AutonomousWorkerService {
 
     const websiteUrl = primarySite?.url || 'https://nexora.ai';
 
-    const rawPitch =
-      primarySite?.metaDescription ||
-      primarySite?.textSnippet?.slice(0, 320) ||
-      params.allContextText.replace(/\*\*/g, '').replace(/`/g, '').replace(/\s+/g, ' ').trim();
-    const productPitch =
-      rawPitch.length > 340 ? `${rawPitch.slice(0, 340).replace(/\s+\S*$/, '')}...` : rawPitch;
+    const buildCleanProfileSummary = (): string => {
+      const stripChatNoise = (s: string): string =>
+        s
+          .replace(/\[Approved PDF:[^\]]*\]/gi, '')
+          .replace(/Approved\.\s*Please submit(?: the applications now)?\.?/gi, '')
+          .replace(/\[Attached[^\]]*\]/gi, '')
+          .replace(/Candidate Profile & Documents Registered[\s\S]*?(?=\n\n|$)/gi, '')
+          .replace(/\*\*/g, '')
+          .replace(/`/g, '')
+          .replace(/\s+/g, ' ')
+          .trim();
+
+      // 1. First priority: User's explicit Additional Notes / Cover Letter from Prerequisites modal
+      const notesMatch = params.allContextText.match(
+        /(?:Additional\s+Notes(?:\s*\/\s*Context)?|Cover\s+Letter|Applicant\s+Notes|Notes)\s*:\s*([^\n]+(?:\n(?!\[|[A-Z][a-zA-Z\s/]{2,30}:)[^\n]+)*)/i,
+      );
+      if (notesMatch?.[1]) {
+        const cleanedNotes = stripChatNoise(notesMatch[1]);
+        if (cleanedNotes.length >= 25 && !/^(none|n\/a|nil|approved)$/i.test(cleanedNotes)) {
+          return cleanedNotes.length > 420
+            ? `${cleanedNotes.slice(0, 420).replace(/\s+\S*$/, '')}...`
+            : cleanedNotes;
+        }
+      }
+
+      // 2. For Investor Agent with a scraped startup site, use the site's description
+      if (params.agentType === AgentType.INVESTOR_AGENT && primarySite) {
+        const sitePitch = stripChatNoise(primarySite.metaDescription || primarySite.textSnippet || '');
+        if (sitePitch.length >= 30) {
+          return sitePitch.length > 340 ? `${sitePitch.slice(0, 340).replace(/\s+\S*$/, '')}...` : sitePitch;
+        }
+      }
+
+      // 2b. AI-extracted professional summary from the uploaded CV
+      const aiSummaryMatch = params.allContextText.match(/\[AI CV Profile Summary\]:\s*([^\n]+)/i);
+      if (aiSummaryMatch?.[1]) {
+        const cleanedAiSummary = stripChatNoise(aiSummaryMatch[1]);
+        if (cleanedAiSummary.length >= 30) {
+          return cleanedAiSummary;
+        }
+      }
+
+      // 3. Extract Professional Summary / Profile section directly from the uploaded CV text
+      const cvBlockMatch = params.allContextText.match(/\[Uploaded CV[^\]]*\]:\s*([\s\S]+)/i);
+      const cvText = cvBlockMatch?.[1] || '';
+      if (cvText) {
+        const summaryMatch = cvText.match(
+          /(?:PROFESSIONAL\s+SUMMARY|EXECUTIVE\s+SUMMARY|CAREER\s+SUMMARY|PROFILE\s+SUMMARY|SUMMARY|ABOUT\s+ME|PROFILE)\s*[:\n]+([\s\S]{40,480}?)(?:\n\s*(?:EXPERIENCE|WORK\s+EXPERIENCE|EMPLOYMENT|EDUCATION|SKILLS|TECHNICAL\s+SKILLS|PROJECTS|CERTIFICATIONS)\b|\n\n\n|$)/i,
+        );
+        if (summaryMatch?.[1]) {
+          const cleanedCvSummary = stripChatNoise(summaryMatch[1]);
+          if (cleanedCvSummary.length >= 40) {
+            return cleanedCvSummary.length > 380
+              ? `${cleanedCvSummary.slice(0, 380).replace(/\s+\S*$/, '')}...`
+              : cleanedCvSummary;
+          }
+        }
+        // Also match headline bio sentences like "Senior Full-Stack Web & Mobile Developer with 7+ years of experience..."
+        const introBioMatch = cvText.match(
+          /([A-Z][A-Za-z0-9\s&/+-]{5,60}\s+with\s+\d{1,2}\+?\s+years?\s+of\s+experience[^.\n]{10,240}\.)/,
+        );
+        if (introBioMatch?.[1]) {
+          const cleanedBio = stripChatNoise(introBioMatch[1]);
+          if (cleanedBio.length >= 40) {
+            return `${effectiveApplicantName} — ${cleanedBio}`;
+          }
+        }
+      }
+
+      // 4. Synthesize a crisp professional summary from Target Role, experience years & CV skills
+      const roleMatch = params.allContextText.match(
+        /(?:Target\s+(?:Job\s+)?Role|Profession|Job\s+Title)\s*:\s*([^\n|]+)/i,
+      );
+      const targetRole = roleMatch?.[1]?.trim() || 'Software & Technology Professional';
+      const yearsMatch = (cvText || params.allContextText).match(/\b(\d{1,2}\+?)\s+years?(?:\s+of)?\s+(?:professional\s+|industry\s+|hands-on\s+)?experience\b/i);
+      const detectedSkills = [
+        'React Native',
+        'React',
+        'TypeScript',
+        'JavaScript',
+        'Node.js',
+        'Next.js',
+        'iOS',
+        'Android',
+        'AWS',
+        'Firebase',
+        'PostgreSQL',
+        'MongoDB',
+        'Python',
+        'Java',
+        'Docker',
+        'GraphQL',
+      ].filter((s) =>
+        new RegExp(`(?:^|[^a-z0-9])${s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:$|[^a-z0-9])`, 'i').test(
+          cvText || params.allContextText,
+        ),
+      );
+      const expPhrase = yearsMatch?.[1] ? ` with ${yearsMatch[1]} years of experience` : '';
+      const skillsPhrase =
+        detectedSkills.length > 0
+          ? ` specializing in ${detectedSkills.slice(0, 6).join(', ')}`
+          : '';
+      return `${effectiveApplicantName} is an accomplished ${targetRole}${expPhrase}${skillsPhrase}. Please see the attached CV and supporting documents for full project history, qualifications, and references.`;
+    };
+
+    const productPitch = buildCleanProfileSummary();
 
     let emailsSentCount = 0;
     const maxSmtpEmailsPerRun =
@@ -933,6 +1519,7 @@ export class AutonomousWorkerService {
               ? 'INVESTMENT'
               : null;
 
+    await platformStore.syncFromFirebase();
     const pState = platformStore.getState();
     const ctxLower = params.allContextText.toLowerCase();
     const sessionAtts = this.sessionAttachments.get(params.customerId) ?? [];
@@ -949,7 +1536,8 @@ export class AutonomousWorkerService {
           .filter((v) => v.status === 'PUBLISHED' && v.category === targetCategory)
           .filter((v) => {
             const org = pState.organisations.find((o) => o.id === v.organisationId);
-            if ((v.requiresAssessment || org?.requireTranscript) && !candidateHasTranscript) {
+            if (!org) return false;
+            if ((v.requiresAssessment || org.requireTranscript) && !candidateHasTranscript) {
               return false;
             }
             return true;
@@ -992,12 +1580,65 @@ export class AutonomousWorkerService {
           })
       : [];
 
-    const prioritizedTargets = [...nexoraTargets, ...params.discoveredTargets].slice(
-      0,
-      Math.max(maxSmtpEmailsPerRun, params.discoveredTargets.length),
-    );
+    // Deduplicate targets by unique email and unique portal/application URL (+ previously applied Autopilot emails/companies!)
+    const exclusions = this.sessionExclusions.get(params.customerId);
+    const seenTargetEmails = new Set<string>(exclusions?.emails || []);
+    const seenTargetCompanies = new Set<string>(exclusions?.companies || []);
+    const seenTargetUrls = new Set<string>();
+    const prioritizedTargets = [...nexoraTargets, ...params.discoveredTargets].filter((t) => {
+      const emailKey = (t.contactEmail || '').trim().toLowerCase();
+      const urlKey = (t.applicationUrl || t.portalUrl || '').trim().toLowerCase();
+      const companyKey = (t.name || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (emailKey && seenTargetEmails.has(emailKey)) return false;
+      if (urlKey && seenTargetUrls.has(urlKey)) return false;
+      if (companyKey.length >= 3 && seenTargetCompanies.has(companyKey)) return false;
+      if (emailKey) seenTargetEmails.add(emailKey);
+      if (urlKey) seenTargetUrls.add(urlKey);
+      if (companyKey.length >= 3) seenTargetCompanies.add(companyKey);
+      return true;
+    });
 
-    for (const target of prioritizedTargets) {
+    // Pre-generate hyper-personalized per-company pitches in 1 fast batched OpenClaw call
+    const targetsToPersonalize = prioritizedTargets.slice(0, Math.max(maxSmtpEmailsPerRun, 1));
+    const contactDisplayForPitch =
+      [params.customerEmail, params.customerPhone]
+        .filter((v) => v && v.trim() && v.trim() !== 'Not provided')
+        .join(' | ') || 'Provided in attached CV';
+    let tailoredPitches = new Map<string, { subject: string; body: string; profileSummary: string }>();
+    if (
+      targetsToPersonalize.length > 0 &&
+      process.env.NODE_ENV !== 'test' &&
+      !process.env.VITEST
+    ) {
+      this.emitProgress(params.customerId, {
+        phase: `OpenClaw crafting custom pitches for ${targetsToPersonalize.length} target(s)...`,
+        sentCount: 0,
+        totalTarget: maxSmtpEmailsPerRun,
+      });
+      const cvExcerpt =
+        params.allContextText.match(/\[Uploaded CV[^\]]*\]:\s*([\s\S]+)/i)?.[1] ||
+        params.allContextText;
+      tailoredPitches = await generateTailoredPitchesBatchWithAI({
+        agentType: params.agentType,
+        applicantName: effectiveApplicantName,
+        applicantContact: contactDisplayForPitch,
+        cvOrProfileText: `${productPitch}\n\n${cvExcerpt}`,
+        targets: targetsToPersonalize.map((t, idx) => ({
+          key: `t-${idx}`,
+          name: t.name,
+          category: t.category,
+          focusSummary: t.focusSummary || t.name,
+        })),
+        customerId: params.customerId,
+      });
+    }
+
+    for (let targetIdx = 0; targetIdx < prioritizedTargets.length; targetIdx++) {
+      const target = prioritizedTargets[targetIdx]!;
+      const tailored = tailoredPitches.get(`t-${targetIdx}`);
+      if (emailsSentCount >= maxSmtpEmailsPerRun) {
+        break;
+      }
       const receiptId = `SUB-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
 
       // If this is a Nexora-hosted company vacancy, record the application directly on the Company Dashboard
@@ -1081,6 +1722,8 @@ export class AutonomousWorkerService {
           .filter((v) => v && v.trim() && v.trim() !== 'Not provided')
           .join(' | ') || 'Provided in attached CV';
 
+      const effectiveProfileSummary = tailored?.profileSummary || productPitch;
+
       const submittedFields: Record<string, string> =
         params.agentType === AgentType.INVESTOR_AGENT
           ? {
@@ -1088,7 +1731,7 @@ export class AutonomousWorkerService {
               company_name: startupOrProjectName,
               website_url: websiteUrl,
               stage: 'Seed / Growth Stage',
-              traction_summary: productPitch,
+              traction_summary: effectiveProfileSummary,
               founder_contact: `${applicantUserLabel} (${contactDisplay})`,
             }
           : {
@@ -1096,27 +1739,29 @@ export class AutonomousWorkerService {
               applicant_name: applicantUserLabel,
               applicant_contact: contactDisplay,
               target_portal: target.applicationUrl,
-              profile_summary: productPitch,
+              profile_summary: effectiveProfileSummary,
               submission_mode: 'Nexora AI Autonomous Workforce Agent',
             };
 
       const emailSubject =
-        params.agentType === AgentType.INVESTOR_AGENT
+        tailored?.subject ||
+        (params.agentType === AgentType.INVESTOR_AGENT
           ? `Investment Introduction: ${startupOrProjectName} — ${effectiveApplicantName}`
           : params.agentType === AgentType.JOB_AGENT
             ? `Job Application: ${target.name} — ${effectiveApplicantName}`
             : params.agentType === AgentType.EDUCATION_AGENT
               ? `Scholarship Application: ${target.name} — ${effectiveApplicantName}`
-              : `Application: ${target.name} — ${effectiveApplicantName}`;
+              : `Application: ${target.name} — ${effectiveApplicantName}`);
 
       const emailBody =
-        params.agentType === AgentType.INVESTOR_AGENT
+        tailored?.body ||
+        (params.agentType === AgentType.INVESTOR_AGENT
           ? [
               `Dear ${target.name} Investment Team,`,
               '',
               `Nexora AI is submitting this investment application on behalf of ${applicantUserLabel} (${websiteUrl}) for ${target.checkSizeOrBenefit} consideration.`,
               '',
-              `• Summary: ${productPitch}`,
+              `• Summary: ${effectiveProfileSummary}`,
               '',
               `Submitted on behalf of ${applicantUserLabel} via Nexora AI Autonomous Workforce.`,
             ].join('\n')
@@ -1135,15 +1780,39 @@ export class AutonomousWorkerService {
                 `Dear ${target.name} Team,`,
                 '',
                 `Nexora AI is submitting this application package on behalf of ${applicantUserLabel}.`,
-                `Summary: ${productPitch}`,
+                `Summary: ${effectiveProfileSummary}`,
                 '',
                 `Submitted on behalf of ${applicantUserLabel} via Nexora AI Autonomous Workforce.`,
-              ].join('\n');
+              ].join('\n'));
 
-      const shouldExecuteLive =
+      const submissionMode = this.sessionSubmissionModes.get(params.customerId) || 'EMAIL_ONLY';
+      const allowEmail = submissionMode === 'EMAIL_ONLY' || submissionMode === 'BOTH';
+      const allowForm = submissionMode === 'FORM_ONLY' || submissionMode === 'BOTH';
+      const realContact = this.sessionRealContacts.get(params.customerId);
+      const effectiveRealEmail =
+        (realContact?.email && !/^(client|candidate)@nexora\.ai$/i.test(realContact.email)
+          ? realContact.email
+          : undefined) || params.customerEmail;
+      const effectiveRealPhone = realContact?.phone || params.customerPhone;
+
+      const hasValidRecipientEmail = isValidCompanyEmail(target.contactEmail);
+      const shouldSendSmtpForTarget =
         process.env.NODE_ENV !== 'test' &&
         !process.env.VITEST &&
-        emailsSentCount < maxSmtpEmailsPerRun;
+        emailsSentCount < maxSmtpEmailsPerRun &&
+        allowEmail &&
+        hasValidRecipientEmail;
+      const shouldFillFormForTarget =
+        process.env.NODE_ENV !== 'test' &&
+        !process.env.VITEST &&
+        emailsSentCount < maxSmtpEmailsPerRun &&
+        allowForm &&
+        Boolean(target.applicationUrl && /^https?:\/\//i.test(target.applicationUrl));
+
+      // Skip targets that can neither be emailed nor form-filled under the user's chosen submission mode
+      if (!target.nexoraVacancyId && !shouldSendSmtpForTarget && !shouldFillFormForTarget) {
+        continue;
+      }
 
       const stageOrRoleByAgent: Record<string, string> = {
         [AgentType.JOB_AGENT]: target.category || 'Software Developer',
@@ -1159,13 +1828,20 @@ export class AutonomousWorkerService {
       };
 
       let browserProof: BrowserFormFillResult | undefined;
-      if (shouldExecuteLive) {
+      if (shouldFillFormForTarget) {
+        this.emitProgress(params.customerId, {
+          phase: `Filling live application form (${emailsSentCount} / ${maxSmtpEmailsPerRun} completed)...`,
+          sentCount: emailsSentCount,
+          totalTarget: maxSmtpEmailsPerRun,
+          latestTarget: target.name,
+        });
+        const verifyCb = this.sessionVerificationCallbacks.get(params.customerId);
         browserProof = await browserFormFillerService.fillWebFormAndCaptureProof({
           agentType: params.agentType,
           applicantName: applicantUserLabel,
           companyName: startupOrProjectName,
-          email: params.customerEmail,
-          phone: params.customerPhone,
+          email: effectiveRealEmail,
+          phone: effectiveRealPhone,
           websiteUrl,
           location: 'South Africa / International',
           stageOrRole: stageOrRoleByAgent[params.agentType] || 'Candidate',
@@ -1177,35 +1853,55 @@ export class AutonomousWorkerService {
           targetApplicationUrl: target.applicationUrl,
           referenceId: receiptId,
           fileUploadPath: params.generatedDocument?.filePath,
+          onVerificationRequired: verifyCb,
         });
       }
 
-      // Attempt live dispatch via Zoho SMTP (with CV PDF attached for JOB_AGENT, or screenshot + PDF for other agents)
-      const smtpDispatch = await this.dispatchEmailAndWebhook({
-        customerId: params.customerId,
-        agentType: params.agentType,
-        applicantName: applicantUserLabel,
-        target,
-        receiptId,
-        subject: emailSubject,
-        body: emailBody,
-        fields: submittedFields,
-        browserProof,
-        generatedDocument: params.generatedDocument,
-        shouldSendSmtp: shouldExecuteLive,
-      });
+      // Attempt live dispatch via Zoho SMTP (when submissionMode allows email and target has verified email)
+      const smtpDispatch = shouldSendSmtpForTarget
+        ? await this.dispatchEmailAndWebhook({
+            customerId: params.customerId,
+            agentType: params.agentType,
+            applicantName: applicantUserLabel,
+            target,
+            receiptId,
+            subject: emailSubject,
+            body: emailBody,
+            fields: submittedFields,
+            browserProof,
+            generatedDocument: params.generatedDocument,
+            shouldSendSmtp: true,
+          })
+        : null;
 
-      if (smtpDispatch?.status === 'SENT') {
+      if (smtpDispatch?.status === 'SENT' || browserProof?.registrationCompleted) {
         emailsSentCount += 1;
-        imapMonitorService.recordOutboundMessage({
-          receiptId,
-          from: process.env.SMTP_FROM || 'mrdocs@empiredigitals.org',
-          to: smtpDispatch.deliveredTo || target.contactEmail || 'portal',
-          subject: emailSubject,
-          body: emailBody,
-          receivedAt: new Date().toISOString(),
-          companyName: target.name,
+        this.emitProgress(params.customerId, {
+          phase: `Submitting applications (${emailsSentCount} / ${maxSmtpEmailsPerRun} completed)`,
+          sentCount: emailsSentCount,
+          totalTarget: maxSmtpEmailsPerRun,
+          latestTarget: target.name,
         });
+        if (smtpDispatch?.status === 'SENT') {
+          imapMonitorService.recordOutboundMessage({
+            receiptId,
+            from: process.env.SMTP_FROM || 'mrdocs@empiredigitals.org',
+            to: smtpDispatch.deliveredTo || target.contactEmail || 'portal',
+            subject: emailSubject,
+            body: emailBody,
+            receivedAt: new Date().toISOString(),
+            companyName: target.name,
+          });
+        }
+      }
+
+      // Only record & bill submissions that were actually delivered (or recorded on a Nexora-hosted vacancy)
+      const wasActuallyDelivered =
+        smtpDispatch?.status === 'SENT' ||
+        Boolean(browserProof?.registrationCompleted) ||
+        Boolean(target.nexoraVacancyId);
+      if (!wasActuallyDelivered && process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
+        continue;
       }
 
       receipts.push({
@@ -1277,36 +1973,12 @@ export class AutonomousWorkerService {
       }
     }
 
-    // 2. Live SMTP email dispatch via Zoho SMTP (mrdocs@empiredigitals.org -> info@empiredigitals.org)
-    if (shouldSendSmtp) {
+    // 2. Live SMTP email dispatch via Zoho SMTP — NEVER send if no real verified recipient email exists
+    const verifiedTargetEmail = isValidCompanyEmail(target.contactEmail) ? target.contactEmail : undefined;
+    if (shouldSendSmtp && verifiedTargetEmail) {
       try {
         const attachments: Array<{ filename: string; path?: string; content?: Buffer }> = [];
-        const documentLinks: Array<{ docType: string; label: string; fileName: string; url?: string }> = [];
-
-        // For Job Applications, attach the candidate's CV PDF — do NOT attach a login-page screenshot to employers!
-        if (generatedDocument?.filePath && generatedDocument.fileName) {
-          attachments.push({
-            filename: generatedDocument.fileName,
-            path: generatedDocument.filePath,
-          });
-          documentLinks.push({
-            docType: agentType === AgentType.VISA_AGENT ? 'RELOCATION_DOSSIER' : 'PRIMARY_DOCUMENT',
-            label: generatedDocument.fileName,
-            fileName: generatedDocument.fileName,
-            url: generatedDocument.downloadUrl,
-          });
-        }
-
-        if (
-          agentType !== AgentType.JOB_AGENT &&
-          browserProof?.screenshotPath &&
-          browserProof.screenshotFileName
-        ) {
-          attachments.push({
-            filename: browserProof.screenshotFileName,
-            path: browserProof.screenshotPath,
-          });
-        }
+        const rawDocumentLinks: Array<{ docType: string; label: string; fileName: string; url?: string }> = [];
 
         // Attach any user-uploaded reference documents registered in this conversation/session
         if (customerId) {
@@ -1317,17 +1989,18 @@ export class AutonomousWorkerService {
             }
           }
 
-          // Also attach Supporting Documents (Passport, Permits, Certificates, CVs, IDs) from Firebase/store
+          // Attach Supporting Documents (CV, Passport, Permits, Certificates, IDs, Transcripts) from Firebase/store
+          const resolvedUidForEmail = this.sessionUserUids.get(customerId) || customerId;
           const supportingDocs = platformStore
             .getState()
             .supportingDocuments.filter(
               (d) =>
-                d.userUid === customerId &&
+                (d.userUid === resolvedUidForEmail || d.userUid === customerId) &&
                 (d.agentType === agentType ||
                   /PASSPORT|ID|PERMIT|CERTIFICATE|CV|TRANSCRIPT/i.test(d.docType)),
             );
           for (const sdoc of supportingDocs) {
-            documentLinks.push({
+            rawDocumentLinks.push({
               docType: sdoc.docType,
               label: sdoc.label,
               fileName: sdoc.fileName,
@@ -1354,10 +2027,61 @@ export class AutonomousWorkerService {
           }
         }
 
+        // For Job Applications, attach the candidate's CV PDF — do NOT duplicate if already in supportingDocs!
+        if (generatedDocument?.filePath && generatedDocument.fileName) {
+          if (!attachments.some((a) => a.filename === generatedDocument.fileName)) {
+            attachments.push({
+              filename: generatedDocument.fileName,
+              path: generatedDocument.filePath,
+            });
+          }
+          const alreadyListed = rawDocumentLinks.some(
+            (d) =>
+              (generatedDocument.downloadUrl && d.url === generatedDocument.downloadUrl) ||
+              d.fileName.trim().toLowerCase() === generatedDocument.fileName.trim().toLowerCase(),
+          );
+          if (!alreadyListed) {
+            rawDocumentLinks.push({
+              docType:
+                agentType === AgentType.VISA_AGENT
+                  ? 'RELOCATION_DOSSIER'
+                  : agentType === AgentType.JOB_AGENT
+                    ? 'CV'
+                    : 'PRIMARY_DOCUMENT',
+              label: agentType === AgentType.JOB_AGENT ? 'CV / Resume' : generatedDocument.fileName,
+              fileName: generatedDocument.fileName,
+              url: generatedDocument.downloadUrl,
+            });
+          }
+        }
+
+        if (
+          agentType !== AgentType.JOB_AGENT &&
+          browserProof?.screenshotPath &&
+          browserProof.screenshotFileName
+        ) {
+          attachments.push({
+            filename: browserProof.screenshotFileName,
+            path: browserProof.screenshotPath,
+          });
+        }
+
+        // Deduplicate document links by URL or normalized fileName so the same PDF never appears twice
+        const seenDocKeys = new Set<string>();
+        const documentLinks = rawDocumentLinks.filter((d) => {
+          const urlKey = d.url ? `url:${d.url.trim().toLowerCase()}` : '';
+          const nameKey = `name:${d.fileName.trim().toLowerCase()}`;
+          if ((urlKey && seenDocKeys.has(urlKey)) || seenDocKeys.has(nameKey)) {
+            return false;
+          }
+          if (urlKey) seenDocKeys.add(urlKey);
+          seenDocKeys.add(nameKey);
+          return true;
+        });
+
         const emailResult = await sendApplicationEmailOnBehalfOfUser({
           applicantName,
-          intendedRecipientEmail:
-            target.contactEmail || 'portal-intake@' + new URL(target.portalUrl).hostname,
+          intendedRecipientEmail: verifiedTargetEmail,
           platformName: target.name,
           platformCategory: target.category,
           agentType,

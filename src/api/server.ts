@@ -25,12 +25,17 @@ import { QueueService } from '../queues/queue.service';
 import { TaskService } from '../tasks/task.service';
 import { autonomousWorkerService } from '../tools/autonomous-worker.service';
 import { documentGeneratorService } from '../tools/document-generator.service';
+import pdfParse from 'pdf-parse';
 import { imapMonitorService } from '../tools/imap-monitor.service';
+import { autopilotService } from '../tools/autopilot.service';
+import { extractCvJobProfileWithAI } from '../tools/cv-ai-matcher.service';
 import { jobSearchApiService } from '../tools/job-search-api.service';
 import { visaRelocationService } from '../tools/visa-relocation.service';
 import { paystackService } from '../tools/paystack.service';
 import { downloadFromFirebaseStorage } from '../tools/firebase-storage.service';
+import { platformStore } from '../modules/platform/platform.store';
 import { registerPlatformRoutes } from './platform.routes';
+import { registerLiveInterviewWebSocket } from './live-interview.ws';
 
 export interface ApiServerDependencies {
   repository: NexoraRepository;
@@ -93,9 +98,9 @@ const UploadDocumentJsonSchema = z.object({
 export async function buildApiServer(deps: ApiServerDependencies): Promise<FastifyInstance> {
   const app = Fastify({
     logger: false,
-    connectionTimeout: 240_000,
-    keepAliveTimeout: 240_000,
-    requestTimeout: 240_000,
+    connectionTimeout: 600_000,
+    keepAliveTimeout: 600_000,
+    requestTimeout: 600_000,
     bodyLimit: 25 * 1024 * 1024,
   });
 
@@ -455,14 +460,17 @@ export async function buildApiServer(deps: ApiServerDependencies): Promise<Fasti
 
   // 11. Interactive React Web Console & OpenClaw Direct Bridge Endpoints
   const WebChatMessageSchema = z.object({
+    userUid: z.string().optional(),
     phoneNumber: z.string().min(5).default('+447700900777'),
     conversationId: z.string().optional(),
     agentType: z.string().optional(),
-    maxSubmissions: z.number().int().min(1).max(25).optional(),
+    maxSubmissions: z.number().int().min(1).max(100).optional(),
+    submissionMode: z.enum(['EMAIL_ONLY', 'FORM_ONLY', 'BOTH']).optional(),
     costPerSubmissionCents: z.number().int().min(0).max(50000).optional(),
     deepThink: z.boolean().optional(),
     displayName: z.string().optional(),
     customerName: z.string().optional(),
+    userEmail: z.string().optional(),
     text: z.string().optional(),
     message: z.string().optional(),
     attachment: z
@@ -617,64 +625,382 @@ export async function buildApiServer(deps: ApiServerDependencies): Promise<Fasti
           ? (body.agentType as any)
           : undefined;
 
-      const result = await deps.orchestratorService.handleIncomingWhatsAppMessage(
-        {
-          externalMessageId: `webchat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          senderJid,
-          senderPhoneNumber: `+${digits}`,
-          pushName: resolvedDisplayName,
-          timestamp: new Date(),
-          messageType,
-          textContent: resolvedText,
-          media,
-        },
-        { skipWhatsAppSend: true, preferredAgent, maxSubmissions: body.maxSubmissions, deepThink: body.deepThink },
+      // Enforce credit limit before dispatching autonomous submissions
+      const preResolved = await deps.repository.findOrCreateCustomerByWhatsApp({
+        whatsappNumber: `+${digits}`,
+        whatsappJid: senderJid,
+        displayName: resolvedDisplayName,
+      });
+      if (body.conversationId) {
+        autonomousWorkerService.registerSessionConversation(preResolved.customer.id, body.conversationId);
+      }
+      if (body.userUid) {
+        autonomousWorkerService.registerSessionUserUid(preResolved.customer.id, body.userUid);
+      }
+      const chosenSubmissionMode = body.submissionMode || 'EMAIL_ONLY';
+      autonomousWorkerService.registerSessionSubmissionMode(
+        preResolved.customer.id,
+        chosenSubmissionMode,
+      );
+      autonomousWorkerService.registerSessionRealContact(preResolved.customer.id, {
+        email: body.userEmail,
+        phone: body.phoneNumber ? `+${digits}` : undefined,
+      });
+      const preWallet = await deps.repository.getCustomerWallet(preResolved.customer.id, body.userUid);
+      const unitCostCents =
+        typeof body.costPerSubmissionCents === 'number' && body.costPerSubmissionCents >= 0
+          ? body.costPerSubmissionCents
+          : await deps.repository.getAgentCostPerSubmissionCents(preferredAgent || 'JOB_AGENT');
+      const maxAffordable =
+        unitCostCents > 0 ? Math.min(100, Math.floor(preWallet.balanceCents / unitCostCents)) : 100;
+      const effectiveMaxSubmissions = Math.max(
+        0,
+        Math.min(body.maxSubmissions ?? 5, maxAffordable),
       );
 
-      const submittedCount = result.submittedApplications?.length ?? 0;
-      const wallet =
-        submittedCount > 0
-          ? await deps.repository.deductSubmissionCredits(
-              result.customerId,
-              result.routedAgent,
-              submittedCount,
-              body.costPerSubmissionCents,
-            )
-          : await deps.repository.getCustomerWallet(result.customerId);
+      const trimmedResolved = resolvedText.trim().toLowerCase();
+      const isShortYesApproval =
+        trimmedResolved.length <= 40 &&
+        /^(?:yes|yeah|yep|yup|sure|ok|okay|please\s+do|proceed|go\s+ahead|submit|apply|do\s+it|confirm)\b/i.test(
+          trimmedResolved,
+        ) &&
+        !/\b(?:no|not|don'?t|wait|cancel|stop|later|change|edit|modify)\b/i.test(trimmedResolved);
+      const isApprovalSubmitMsg =
+        isShortYesApproval ||
+        /\b(?:approved\.?\s*please\s+submit|approve\s*(?:&|and)\s*submit|looks\s+good,?\s*(?:search\s+and\s+)?apply|confirm\s*(?:&|and)\s*submit|apply\s+on\s+candidate\s+behalf|submit\s+the\s+applications\s+now|yes,?\s*(?:submit|apply|send)|go\s+ahead\s+and\s+(?:apply|submit|send))\b/i.test(
+          resolvedText,
+        );
+      const isBulkApprovalSubmit =
+        isApprovalSubmitMsg &&
+        effectiveMaxSubmissions >= 1 &&
+        process.env.NODE_ENV !== 'test' &&
+        !process.env.VITEST;
 
-      const projects = await deps.projectService.listCustomerProjects(result.customerId);
-      const approvals = await deps.approvalService.listPendingApprovals(result.customerId);
-      const executions = await deps.repository.listAgentExecutions(result.customerId, 15);
-      const messages = await deps.repository.listConversationMessages(
-        result.customerId,
-        result.conversationId,
-        50,
-      );
+      const executeSubmissionFlow = async () => {
+        const result = await deps.orchestratorService.handleIncomingWhatsAppMessage(
+          {
+            externalMessageId: `webchat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            senderJid,
+            senderPhoneNumber: `+${digits}`,
+            pushName: resolvedDisplayName,
+            timestamp: new Date(),
+            messageType,
+            textContent: resolvedText,
+            media,
+          },
+          {
+            skipWhatsAppSend: true,
+            preferredAgent,
+            maxSubmissions: effectiveMaxSubmissions,
+            deepThink: body.deepThink,
+          },
+        );
 
-      return {
-        ok: true,
-        data: {
-          replyText: result.responseText,
-          response: result.responseText,
-          responseText: result.responseText,
-          detectedIntent: result.detectedIntent,
-          routedAgentType: result.routedAgent,
-          thinkingSummary: result.thinkingSummary,
-          thinkingDurationMs: result.thinkingDurationMs,
-          generatedDocument: result.generatedDocument,
-          submittedApplications: result.submittedApplications,
-          wallet,
-          orchestration: result,
-          messages,
-          projects,
-          approvals,
-          executions,
-        },
+        const submittedCount = (result.submittedApplications ?? []).filter(
+          (s) =>
+            (s as { smtpStatus?: string }).smtpStatus === 'SENT' ||
+            s.status === 'EMAIL_SENT' ||
+            s.status === 'FORM_FILLED_AND_EMAILED' ||
+            Boolean((s as { browserFormProof?: { registrationCompleted?: boolean } }).browserFormProof?.registrationCompleted),
+        ).length;
+        const wallet =
+          submittedCount > 0
+            ? await deps.repository.deductSubmissionCredits(
+                result.customerId,
+                result.routedAgent,
+                submittedCount,
+                body.costPerSubmissionCents,
+                body.userUid,
+              )
+            : await deps.repository.getCustomerWallet(result.customerId, body.userUid);
+
+        const projects = await deps.projectService.listCustomerProjects(result.customerId);
+        const approvals = await deps.approvalService.listPendingApprovals(result.customerId);
+        const executions = await deps.repository.listAgentExecutions(result.customerId, 15);
+        const messages = await deps.repository.listConversationMessages(
+          result.customerId,
+          result.conversationId,
+          50,
+        );
+
+        return {
+          ok: true,
+          data: {
+            replyText: result.responseText,
+            response: result.responseText,
+            responseText: result.responseText,
+            detectedIntent: result.detectedIntent,
+            routedAgentType: result.routedAgent,
+            thinkingSummary: result.thinkingSummary,
+            thinkingDurationMs: result.thinkingDurationMs,
+            generatedDocument: result.generatedDocument,
+            submittedApplications: result.submittedApplications,
+            wallet,
+            orchestration: result,
+            messages,
+            projects,
+            approvals,
+            executions,
+          },
+        };
       };
+
+      if (isBulkApprovalSubmit) {
+        const jobId = `job-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        bulkSubmissionJobs.set(jobId, {
+          jobId,
+          status: 'RUNNING',
+          phase: 'Analyzing CV & discovering verified targets...',
+          sentCount: 0,
+          totalTarget: effectiveMaxSubmissions,
+          startedAt: new Date().toISOString(),
+        });
+        autonomousWorkerService.registerProgressCallback(preResolved.customer.id, (update) => {
+          const existing = bulkSubmissionJobs.get(jobId);
+          if (existing && existing.status === 'RUNNING') {
+            existing.phase = update.phase;
+            existing.sentCount = update.sentCount;
+            existing.totalTarget = update.totalTarget || effectiveMaxSubmissions;
+            existing.latestTarget = update.latestTarget;
+          }
+        });
+
+        autonomousWorkerService.registerVerificationCallback(preResolved.customer.id, (req) => {
+          return new Promise((resolve) => {
+            const verificationId = `ver-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+            const existing = bulkSubmissionJobs.get(jobId);
+            if (existing) {
+              existing.phase =
+                req.type === 'OTP'
+                  ? `Waiting for your OTP code for ${req.targetName}...`
+                  : req.type === 'EMAIL_LINK'
+                    ? `Waiting for your email link confirmation for ${req.targetName}...`
+                    : `Waiting for additional details/documents for ${req.targetName}...`;
+              existing.pendingVerification = {
+                id: verificationId,
+                type: req.type,
+                targetName: req.targetName,
+                portalUrl: req.portalUrl,
+                message: req.message,
+                missingFields: req.missingFields,
+                missingDocuments: req.missingDocuments,
+              };
+            }
+            const timer = setTimeout(() => {
+              pendingVerificationResolvers.delete(verificationId);
+              const cur = bulkSubmissionJobs.get(jobId);
+              if (cur && cur.pendingVerification?.id === verificationId) {
+                cur.pendingVerification = undefined;
+              }
+              resolve({ skipped: true });
+            }, 240_000);
+
+            pendingVerificationResolvers.set(verificationId, (resp) => {
+              clearTimeout(timer);
+              pendingVerificationResolvers.delete(verificationId);
+              const cur = bulkSubmissionJobs.get(jobId);
+              if (cur && cur.pendingVerification?.id === verificationId) {
+                cur.pendingVerification = undefined;
+              }
+              resolve(resp);
+            });
+          });
+        });
+
+        void executeSubmissionFlow()
+          .then((payload) => {
+            const existing = bulkSubmissionJobs.get(jobId);
+            if (existing) {
+              existing.status = 'COMPLETED';
+              existing.phase = 'Completed';
+              existing.pendingVerification = undefined;
+              existing.sentCount = payload.data.submittedApplications?.length ?? existing.sentCount;
+              existing.completedAt = new Date().toISOString();
+              existing.result = payload;
+            }
+          })
+          .catch((err) => {
+            const existing = bulkSubmissionJobs.get(jobId);
+            if (existing) {
+              existing.status = 'FAILED';
+              existing.pendingVerification = undefined;
+              existing.error = err instanceof Error ? err.message : 'Bulk submission failed';
+              existing.completedAt = new Date().toISOString();
+            }
+          })
+          .finally(() => {
+            autonomousWorkerService.clearProgressCallback(preResolved.customer.id);
+            autonomousWorkerService.clearVerificationCallback(preResolved.customer.id);
+          });
+
+        return {
+          ok: true,
+          data: {
+            asyncJobId: jobId,
+            status: 'RUNNING',
+            totalTarget: effectiveMaxSubmissions,
+            phase: 'Analyzing CV & discovering verified targets...',
+          },
+        };
+      }
+
+      return executeSubmissionFlow();
     };
+
+    const pendingVerificationResolvers = new Map<
+      string,
+      (resp: {
+        otpCode?: string;
+        confirmed?: boolean;
+        skipped?: boolean;
+        fieldValues?: Record<string, string>;
+        uploadedDocuments?: Record<string, { fileName: string; contentBase64: string }>;
+        draftDocuments?: string[];
+      }) => void
+    >();
+
+    const bulkSubmissionJobs = new Map<
+      string,
+      {
+        jobId: string;
+        status: 'RUNNING' | 'COMPLETED' | 'FAILED';
+        phase: string;
+        sentCount: number;
+        totalTarget: number;
+        latestTarget?: string;
+        pendingVerification?: {
+          id: string;
+          type: 'OTP' | 'EMAIL_LINK' | 'MISSING_INFO';
+          targetName: string;
+          portalUrl: string;
+          message: string;
+          missingFields?: Array<{
+            key: string;
+            label: string;
+            selector: string;
+            inputType: 'text' | 'textarea' | 'select';
+            placeholder?: string;
+            options?: string[];
+          }>;
+          missingDocuments?: Array<{
+            key: string;
+            label: string;
+            selector: string;
+            accept?: string;
+          }>;
+        };
+        startedAt: string;
+        completedAt?: string;
+        result?: any;
+        error?: string;
+      }
+    >();
+
+    app.get('/api/v1/webchat/job/:jobId', async (request, reply) => {
+      const { jobId } = request.params as { jobId: string };
+      const job = bulkSubmissionJobs.get(jobId);
+      if (!job) {
+        return reply.status(404).send({ ok: false, error: 'Background job not found' });
+      }
+      return { ok: true, data: job };
+    });
+
+    app.post('/api/v1/webchat/job/:jobId/verify', async (request, reply) => {
+      const body = z
+        .object({
+          verificationId: z.string().min(1),
+          otpCode: z.string().optional(),
+          confirmed: z.boolean().optional(),
+          skipped: z.boolean().optional(),
+          fieldValues: z.record(z.string()).optional(),
+          uploadedDocuments: z
+            .record(z.object({ fileName: z.string(), contentBase64: z.string() }))
+            .optional(),
+          draftDocuments: z.array(z.string()).optional(),
+        })
+        .parse(request.body ?? {});
+
+      const resolver = pendingVerificationResolvers.get(body.verificationId);
+      if (!resolver) {
+        return reply.status(404).send({ ok: false, error: 'Verification prompt already expired or resolved' });
+      }
+      resolver({
+        otpCode: body.otpCode,
+        confirmed: body.confirmed,
+        skipped: body.skipped,
+        fieldValues: body.fieldValues,
+        uploadedDocuments: body.uploadedDocuments,
+        draftDocuments: body.draftDocuments,
+      });
+      return { ok: true };
+    });
 
     app.post('/api/v1/webchat/message', handleWebChatMessage);
     app.post('/api/v1/webchat/send', handleWebChatMessage);
+
+    // Always-On Morning Autopilot ($0.10/job, 10 unique jobs/day) & Free 4-Day Auto Follow-Ups
+    app.get('/api/v1/autopilot', async (request, reply) => {
+      const q = request.query as { userUid?: string };
+      if (!q.userUid) {
+        return reply.status(400).send({ ok: false, error: 'userUid is required' });
+      }
+      const config = await autopilotService.getAutopilotConfig(q.userUid);
+      return { ok: true, data: config };
+    });
+
+    app.get('/api/v1/autopilot/submissions', async (request, reply) => {
+      const q = request.query as { userUid?: string };
+      if (!q.userUid) {
+        return reply.status(400).send({ ok: false, error: 'userUid is required' });
+      }
+      const allSubs = await platformStore.fetchFirestoreCollection('nexora_submissions');
+      const items = allSubs
+        .filter(
+          (s) =>
+            (s.userUid === q.userUid || s.userId === q.userUid) &&
+            String(s.source || '').toUpperCase() === 'AUTOPILOT',
+        )
+        .sort((a, b) =>
+          String(b.submittedAt || b.createdAt || '').localeCompare(
+            String(a.submittedAt || a.createdAt || ''),
+          ),
+        );
+      return { ok: true, data: items };
+    });
+
+    app.post('/api/v1/autopilot', async (request) => {
+      const body = z
+        .object({
+          userUid: z.string().min(1),
+          enabled: z.boolean().optional(),
+          status: z.enum(['ACTIVE', 'PAUSED', 'HIRED', 'LOW_BALANCE']).optional(),
+          dailyLimit: z.number().int().min(1).max(25).optional(),
+          runHourLocal: z.number().int().min(0).max(23).optional(),
+        })
+        .parse(request.body ?? {});
+      const config = await autopilotService.updateAutopilotConfig(body.userUid, {
+        enabled: body.enabled,
+        status: body.status,
+        dailyLimit: body.dailyLimit,
+        runHourLocal: body.runHourLocal,
+      });
+      return { ok: true, data: config };
+    });
+
+    app.post('/api/v1/autopilot/run-now', async (request) => {
+      const body = z
+        .object({
+          userUid: z.string().min(1),
+        })
+        .parse(request.body ?? {});
+      const result = await autopilotService.runMorningAutopilotForUser(body.userUid, true);
+      return { ok: true, data: result };
+    });
+
+    app.post('/api/v1/autopilot/followups/run', async () => {
+      const result = await autopilotService.runFreeFollowUpSweep();
+      return { ok: true, data: result };
+    });
 
   app.get('/api/v1/webchat/state', async (request) => {
     const query = z
@@ -873,6 +1199,7 @@ export async function buildApiServer(deps: ApiServerDependencies): Promise<Fasti
       .object({
         phone: z.string().default('27000000000'),
         customerId: z.string().optional(),
+        userUid: z.string().optional(),
       })
       .parse(request.query);
 
@@ -886,7 +1213,7 @@ export async function buildApiServer(deps: ApiServerDependencies): Promise<Fasti
       cid = resolved.customer.id;
     }
 
-    const wallet = await deps.repository.getCustomerWallet(cid);
+    const wallet = await deps.repository.getCustomerWallet(cid, q.userUid);
     return { ok: true, data: wallet };
   });
 
@@ -1084,10 +1411,13 @@ export async function buildApiServer(deps: ApiServerDependencies): Promise<Fasti
               contactEmail: z.string().optional(),
               deliveredToEmail: z.string().optional(),
               portalUrl: z.string().optional(),
+              agentType: z.string().optional(),
             }),
           )
           .optional(),
         lookbackDays: z.number().int().min(1).max(60).optional(),
+        userUid: z.string().optional(),
+        phone: z.string().optional(),
       })
       .parse(request.body ?? {});
 
@@ -1095,7 +1425,37 @@ export async function buildApiServer(deps: ApiServerDependencies): Promise<Fasti
       submissions: body.submissions,
       lookbackDays: body.lookbackDays,
     });
-    return { ok: true, data };
+
+    // Automatically refund the user for any bounced submission emails (idempotent per receiptId)
+    const refundedReceipts: string[] = [];
+    let updatedWallet: { balanceCents: number; balanceDollars: string } | undefined;
+    if (data.bouncedReceiptIds.length > 0 && (body.userUid || body.phone)) {
+      const digits = (body.phone || '27658016132').replace(/[^\d]/g, '') || '27658016132';
+      const customerId = body.userUid || `webchat-${digits}`;
+      for (const receiptId of data.bouncedReceiptIds) {
+        const subMeta = body.submissions?.find(
+          (s) => s.receiptId.toLowerCase() === receiptId.toLowerCase(),
+        );
+        const refundCents = await deps.repository.getAgentCostPerSubmissionCents(
+          (subMeta?.agentType as AgentType) || AgentType.JOB_AGENT,
+        );
+        const creditRes = await deps.repository.addWalletCredits(
+          customerId,
+          refundCents,
+          `bounce-refund:${receiptId.toUpperCase()}`,
+          body.userUid,
+        );
+        if (creditRes.credited) {
+          refundedReceipts.push(receiptId);
+        }
+        updatedWallet = {
+          balanceCents: creditRes.balanceCents,
+          balanceDollars: creditRes.balanceDollars,
+        };
+      }
+    }
+
+    return { ok: true, data: { ...data, refundedReceipts, wallet: updatedWallet } };
   });
 
   app.post('/api/v1/submissions/reply', async (request) => {
@@ -1123,6 +1483,78 @@ export async function buildApiServer(deps: ApiServerDependencies): Promise<Fasti
 
     const sent = await imapMonitorService.sendSubmissionFollowUp(body);
     return { ok: true, data: sent };
+  });
+
+  app.post('/api/v1/jobs/match-from-cv', async (request, reply) => {
+    const body = z
+      .object({
+        cvFilePath: z.string().optional(),
+        cvText: z.string().optional(),
+        targetRole: z.string().optional(),
+        additionalNotes: z.string().optional(),
+        targetCountry: z.string().optional(),
+        limit: z.number().int().min(1).max(20).optional(),
+      })
+      .parse(request.body ?? {});
+
+    let cvText = (body.cvText || '').trim();
+    if (!cvText && body.cvFilePath) {
+      const resolvedPath = path.resolve(process.cwd(), body.cvFilePath);
+      const buf = await fs.readFile(resolvedPath);
+      if (resolvedPath.toLowerCase().endsWith('.pdf')) {
+        const parsed = await pdfParse(buf);
+        cvText = (parsed?.text || '').trim();
+      } else {
+        cvText = buf.toString('utf8').trim();
+      }
+    }
+
+    if (!cvText) {
+      return reply.status(400).send({ ok: false, error: 'Could not extract text from CV' });
+    }
+
+    const aiProfile = await extractCvJobProfileWithAI(
+      cvText,
+      body.targetRole,
+      body.additionalNotes,
+      'cv-match-api',
+      body.targetCountry,
+    );
+    const searchRole = aiProfile?.primaryTitle || body.targetRole || 'Professional';
+    const searchTitles = aiProfile?.matchingTitles || [searchRole];
+    const limit = body.limit ?? 5;
+
+    const searchRes = await jobSearchApiService.searchJobs({
+      role: searchRole,
+      searchTitles,
+      skills: aiProfile?.coreSkills,
+      candidateYearsExperience: aiProfile?.yearsExperience,
+      cvText,
+      isTechRole: aiProfile?.isTechRole,
+      recommendedEmployers: aiProfile?.recommendedEmployers,
+      targetCountry: body.targetCountry,
+      limit,
+    });
+
+    return {
+      ok: true,
+      data: {
+        extractedTextLength: cvText.length,
+        extractedTextPreview: cvText.slice(0, 400),
+        aiProfile,
+        titlesUsed: searchTitles,
+        sourcesUsed: searchRes.sourcesUsed,
+        jobs: searchRes.jobs.slice(0, limit).map((j) => ({
+          title: j.title,
+          company: j.company,
+          location: j.location,
+          source: j.source,
+          url: j.applyUrl || j.url,
+          contactEmail: j.contactEmail,
+          matchScore: j.matchScore,
+        })),
+      },
+    };
   });
 
   app.post('/api/v1/documents/extract', async (request) => {
@@ -1219,6 +1651,21 @@ export async function buildApiServer(deps: ApiServerDependencies): Promise<Fasti
       }
     }
     if (!buffer) {
+      const matchedDoc = platformStore
+        .getState()
+        .supportingDocuments.find((d) => d.fileName === safeName || d.storedFileName === safeName);
+      if (matchedDoc) {
+        if (matchedDoc.downloadUrl && /^https?:\/\//i.test(matchedDoc.downloadUrl)) {
+          return reply.redirect(matchedDoc.downloadUrl);
+        }
+        const remoteByStored = await downloadFromFirebaseStorage(`documents/${matchedDoc.storedFileName}`);
+        if (remoteByStored) {
+          buffer = remoteByStored.buffer;
+          if (remoteByStored.contentType) contentType = remoteByStored.contentType;
+        }
+      }
+    }
+    if (!buffer) {
       return reply.status(404).send({ ok: false, error: 'Document not found' });
     }
     reply.header('Content-Type', contentType);
@@ -1229,6 +1676,80 @@ export async function buildApiServer(deps: ApiServerDependencies): Promise<Fasti
   });
 
   registerPlatformRoutes(app, { openclawService: deps.openclawService });
+
+  app.post('/api/v1/tasks/delete', async (request) => {
+    const body = z
+      .object({
+        conversationId: z.string().optional(),
+        userUid: z.string().optional(),
+        userEmail: z.string().optional(),
+        receiptIds: z.array(z.string()).optional(),
+      })
+      .parse(request.body ?? {});
+
+    if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
+      const projectId = process.env.FIREBASE_PROJECT_ID || 'nexora-d7346';
+      const apiKey = process.env.FIREBASE_API_KEY || 'AIzaSyBjRi92-GpP71HcBUUXknw3vPhX3lSh7dk';
+      const base = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents`;
+
+      const deleteByCollection = async (
+        collection: string,
+        predicate: (fields: Record<string, any>, docName: string) => boolean,
+      ) => {
+        try {
+          const res = await fetch(`${base}/${collection}?pageSize=300&key=${apiKey}`, {
+            signal: AbortSignal.timeout(6000),
+          });
+          if (!res.ok) return;
+          const json = (await res.json()) as {
+            documents?: Array<{ name: string; fields?: Record<string, any> }>;
+          };
+          const toDelete = (json.documents || []).filter((d) =>
+            predicate(d.fields || {}, d.name),
+          );
+          await Promise.all(
+            toDelete.map((d) =>
+              fetch(`https://firestore.googleapis.com/v1/${d.name}?key=${apiKey}`, {
+                method: 'DELETE',
+                signal: AbortSignal.timeout(5000),
+              }).catch(() => undefined),
+            ),
+          );
+        } catch {
+          // non-fatal
+        }
+      };
+
+      await Promise.all([
+        deleteByCollection('nexora_submissions', (f) => {
+          const conv = f.conversationId?.stringValue || '';
+          const email = (f.customerEmail?.stringValue || '').toLowerCase();
+          const targets: string[] = (f.targets?.arrayValue?.values || []).map(
+            (v: any) => v.stringValue || '',
+          );
+          if (body.conversationId && conv === body.conversationId) return true;
+          if (
+            body.receiptIds?.length &&
+            body.receiptIds.some((rid) => targets.some((t) => t.includes(rid)))
+          ) {
+            return true;
+          }
+          if (!body.conversationId && body.userEmail && email === body.userEmail.toLowerCase()) {
+            return true;
+          }
+          return false;
+        }),
+        deleteByCollection('nexora_messages', (f) => {
+          const conv = f.conversationId?.stringValue || '';
+          return Boolean(body.conversationId && conv === body.conversationId);
+        }),
+      ]);
+    }
+
+    return { ok: true };
+  });
+
+  registerLiveInterviewWebSocket(app);
 
   return app;
 }

@@ -5,6 +5,8 @@ import fs from 'fs/promises';
 import path from 'path';
 import { OpenClawService } from '../openclaw/openclaw.service';
 import { uploadToFirebaseStorage } from '../tools/firebase-storage.service';
+import { verifyUploadedDocument } from '../tools/document-verifier.service';
+import { getEmailDeliveryConfig, setEmailDeliveryConfig } from '../tools/email.service';
 import { AssessmentService } from '../modules/platform/assessment.service';
 import { PlatformService } from '../modules/platform/platform.service';
 import { platformStore } from '../modules/platform/platform.store';
@@ -483,7 +485,9 @@ export function registerPlatformRoutes(
         interviewTime: z.string().min(2),
         timezone: z.string().optional(),
         interviewType: z.enum(['ONLINE', 'TELEPHONE', 'IN_PERSON']).optional(),
-        locationOrLink: z.string().min(2),
+        interviewProvider: z.enum(['GOOGLE_LIVE', 'NUANCE', 'EXTERNAL']).optional(),
+        aiQuestions: z.string().optional(),
+        locationOrLink: z.string().optional(),
         instructions: z.string().optional(),
       })
       .parse(request.body);
@@ -510,6 +514,53 @@ export function registerPlatformRoutes(
       return reply.status(400).send({ ok: false, error: err?.message || 'Could not respond to invitation' });
     }
   });
+
+  // ==================== LIVE AI INTERVIEW RECORDINGS (FIREBASE) ====================
+  app.get('/api/v1/live-interview/recordings', async (request) => {
+    const q = z.object({ userUid: z.string().min(1) }).parse(request.query);
+    return {
+      ok: true,
+      data: platformService.listInterviewRecordings(q.userUid),
+    };
+  });
+
+  app.post(
+    '/api/v1/live-interview/recordings',
+    { bodyLimit: 60 * 1024 * 1024 },
+    async (request, reply) => {
+      const body = z
+        .object({
+          userUid: z.string().min(1),
+          interviewId: z.string().optional(),
+          role: z.string().default('Live AI Interview'),
+          companyName: z.string().default('Nexora AI Practice'),
+          interviewType: z.string().default('Technical & Behavioral'),
+          interviewProvider: z.enum(['GOOGLE_LIVE', 'NUANCE', 'EXTERNAL']).optional(),
+          durationSeconds: z.number().min(0).default(1),
+          hasVideo: z.boolean().default(false),
+          mimeType: z.string().default('video/webm'),
+          mediaBase64: z.string().min(10),
+          transcript: z
+            .array(
+              z.object({
+                speaker: z.enum(['ai', 'user']),
+                text: z.string(),
+                timestamp: z.string(),
+              }),
+            )
+            .default([]),
+        })
+        .parse(request.body);
+      try {
+        const result = await platformService.saveInterviewRecording(body);
+        return { ok: true, data: result.recording, invoice: result.invoice || null };
+      } catch (err: any) {
+        return reply
+          .status(500)
+          .send({ ok: false, error: err?.message || 'Could not save interview recording' });
+      }
+    },
+  );
 
   // ==================== INTERVIEWS MODULE ====================
   app.get('/api/v1/interviews', async (request) => {
@@ -547,7 +598,9 @@ export function registerPlatformRoutes(
         interviewTime: z.string().min(2),
         timezone: z.string().default('UTC'),
         interviewType: z.enum(['ONLINE', 'TELEPHONE', 'IN_PERSON']).default('ONLINE'),
-        locationOrLink: z.string().min(2),
+        interviewProvider: z.enum(['GOOGLE_LIVE', 'NUANCE', 'EXTERNAL']).optional(),
+        aiQuestions: z.string().optional(),
+        locationOrLink: z.string().optional(),
         instructions: z.string().optional(),
       })
       .parse(request.body);
@@ -741,7 +794,7 @@ export function registerPlatformRoutes(
     return { ok: true, data: docs };
   });
 
-  app.post('/api/v1/supporting-documents', async (request) => {
+  app.post('/api/v1/supporting-documents', async (request, reply) => {
     const body = z
       .object({
         userUid: z.string().min(1),
@@ -757,6 +810,20 @@ export function registerPlatformRoutes(
     const safeOriginal = path.basename(body.fileName).replace(/[^a-zA-Z0-9._-]/g, '_');
     const storedFileName = `sup_${Date.now()}_${safeOriginal}`;
     const buffer = Buffer.from(body.contentBase64, 'base64');
+
+    const verification = await verifyUploadedDocument({
+      buffer,
+      mimeType: body.mimeType,
+      fileName: body.fileName,
+      docType: body.docType,
+      label: body.label,
+    });
+    if (!verification.valid) {
+      return reply.status(400).send({
+        ok: false,
+        error: verification.reason || 'Uploaded file did not pass document verification.',
+      });
+    }
 
     // Primary cloud storage: Firebase Storage
     const firebaseUrl = await uploadToFirebaseStorage(
@@ -803,6 +870,22 @@ export function registerPlatformRoutes(
     );
     platformStore.save();
     return { ok: true };
+  });
+
+  app.get('/api/v1/system/email-mode', async () => {
+    const cfg = await getEmailDeliveryConfig(true);
+    return { ok: true, data: cfg };
+  });
+
+  app.post('/api/v1/system/email-mode', async (request) => {
+    const body = z
+      .object({
+        mode: z.enum(['TEST', 'LIVE']),
+        testRecipientEmail: z.string().email().optional(),
+      })
+      .parse(request.body);
+    const cfg = await setEmailDeliveryConfig(body.mode, body.testRecipientEmail);
+    return { ok: true, data: cfg };
   });
 
   // ==================== AI CV SCORING & 10% MONTHLY BILLING ====================

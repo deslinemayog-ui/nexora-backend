@@ -3,7 +3,43 @@ import fs from 'fs/promises';
 import path from 'path';
 import { chromium, type Browser, type Page } from 'playwright-core';
 import { ImapFlow } from 'imapflow';
+import { AgentType } from '../database/types';
 import { logger } from '../utils/logger';
+import { documentGeneratorService } from './document-generator.service';
+
+export interface MissingFormFieldPrompt {
+  key: string;
+  label: string;
+  selector: string;
+  inputType: 'text' | 'textarea' | 'select';
+  placeholder?: string;
+  options?: string[];
+}
+
+export interface MissingDocumentPrompt {
+  key: string;
+  label: string;
+  selector: string;
+  accept?: string;
+}
+
+export interface InteractiveVerificationRequest {
+  type: 'OTP' | 'EMAIL_LINK' | 'MISSING_INFO';
+  targetName: string;
+  portalUrl: string;
+  message: string;
+  missingFields?: MissingFormFieldPrompt[];
+  missingDocuments?: MissingDocumentPrompt[];
+}
+
+export interface InteractiveVerificationResponse {
+  otpCode?: string;
+  confirmed?: boolean;
+  skipped?: boolean;
+  fieldValues?: Record<string, string>;
+  uploadedDocuments?: Record<string, { fileName: string; contentBase64: string }>;
+  draftDocuments?: string[];
+}
 
 export interface FormFillInputData {
   agentType?: string;
@@ -22,6 +58,9 @@ export interface FormFillInputData {
   targetApplicationUrl: string;
   referenceId: string;
   fileUploadPath?: string;
+  onVerificationRequired?: (
+    req: InteractiveVerificationRequest,
+  ) => Promise<InteractiveVerificationResponse>;
 }
 
 export interface BrowserFormFillResult {
@@ -133,6 +172,175 @@ export class BrowserFormFillerService {
         pageText.includes('hcaptcha') ||
         pageText.includes('cloudflare turnstile');
 
+      // Interactive Missing Required Fields & Additional Documents Prompt (before submitting the form)
+      if (formDetectedOnLiveSite && !hasCaptchaGate && input.onVerificationRequired) {
+        const missingScan = await page
+          .evaluate(() => {
+            const doc = (globalThis as any).document;
+            if (!doc) return { fields: [] as any[], docs: [] as any[] };
+            const fields: any[] = [];
+            const docs: any[] = [];
+
+            const getLabel = (el: any): string => {
+              const id = el.getAttribute('id');
+              if (id) {
+                const lbl = doc.querySelector(`label[for="${id}"]`);
+                if (lbl?.textContent?.trim()) return lbl.textContent.trim().slice(0, 80);
+              }
+              const parentLabel = el.closest?.('label');
+              if (parentLabel?.textContent?.trim()) return parentLabel.textContent.trim().slice(0, 80);
+              return (
+                el.getAttribute('aria-label') ||
+                el.getAttribute('placeholder') ||
+                el.getAttribute('name') ||
+                'Additional Information'
+              )
+                .replace(/[_-]+/g, ' ')
+                .trim()
+                .slice(0, 80);
+            };
+
+            const isVisible = (el: any): boolean => {
+              const rect = el.getBoundingClientRect?.();
+              return Boolean(rect && rect.width > 0 && rect.height > 0);
+            };
+
+            const controls = Array.from(doc.querySelectorAll('input, textarea, select')) as any[];
+            controls.forEach((el, idx) => {
+              const tag = (el.tagName || '').toLowerCase();
+              const type = (el.getAttribute('type') || 'text').toLowerCase();
+              if (type === 'hidden' || type === 'submit' || type === 'button' || type === 'password' || type === 'checkbox' || type === 'radio' || type === 'search') {
+                return;
+              }
+              if (type === 'file') {
+                if (!el.files || el.files.length === 0) {
+                  const sel = el.getAttribute('name')
+                    ? `input[type="file"][name="${el.getAttribute('name')}"]`
+                    : el.getAttribute('id')
+                      ? `#${el.getAttribute('id')}`
+                      : `input[type="file"]`;
+                  docs.push({
+                    key: `doc_${idx}`,
+                    label: getLabel(el) || 'Additional Document',
+                    selector: sel,
+                    accept: el.getAttribute('accept') || '.pdf,.doc,.docx',
+                  });
+                }
+                return;
+              }
+              if (!isVisible(el)) return;
+              const isReq = el.hasAttribute('required') || el.getAttribute('aria-required') === 'true';
+              const val = String(el.value || '').trim();
+              if (isReq && !val) {
+                const sel = el.getAttribute('id')
+                  ? `#${el.getAttribute('id')}`
+                  : el.getAttribute('name')
+                    ? `${tag}[name="${el.getAttribute('name')}"]`
+                    : `${tag}:nth-of-type(${idx + 1})`;
+                const options =
+                  tag === 'select'
+                    ? Array.from(el.options || [])
+                        .map((o: any) => String(o.text || o.value || '').trim())
+                        .filter(Boolean)
+                        .slice(0, 20)
+                    : undefined;
+                fields.push({
+                  key: `field_${idx}`,
+                  label: getLabel(el),
+                  selector: sel,
+                  inputType: tag === 'textarea' ? 'textarea' : tag === 'select' ? 'select' : 'text',
+                  placeholder: el.getAttribute('placeholder') || undefined,
+                  options,
+                });
+              }
+            });
+            return { fields: fields.slice(0, 8), docs: docs.slice(0, 4) };
+          })
+          .catch(() => ({ fields: [], docs: [] }));
+
+        if (missingScan.fields.length > 0 || missingScan.docs.length > 0) {
+          const userInfoResp = await input.onVerificationRequired({
+            type: 'MISSING_INFO',
+            targetName: input.targetPlatformName,
+            portalUrl: page.url(),
+            message: `${input.targetPlatformName} requires additional information or supporting documents before submitting. Fill in any missing fields below, and for requested documents either upload your own file or let Nexora AI draft it for you.`,
+            missingFields: missingScan.fields,
+            missingDocuments: missingScan.docs,
+          });
+
+          if (!userInfoResp.skipped) {
+            // Fill user-provided missing fields
+            for (const f of missingScan.fields) {
+              const userVal = userInfoResp.fieldValues?.[f.key]?.trim();
+              if (!userVal) continue;
+              try {
+                const loc = page.locator(f.selector).first();
+                if (f.inputType === 'select') {
+                  await loc.selectOption({ label: userVal }).catch(() => loc.selectOption(userVal));
+                } else {
+                  await loc.fill(userVal);
+                }
+                fieldsFilled.push({ fieldLabel: f.label, selector: f.selector, valueFilled: userVal });
+              } catch {
+                // non-fatal
+              }
+            }
+
+            // Attach user-uploaded or AI-drafted additional documents
+            for (const d of missingScan.docs) {
+              try {
+                const uploaded = userInfoResp.uploadedDocuments?.[d.key];
+                const shouldDraft = userInfoResp.draftDocuments?.includes(d.key);
+                if (uploaded?.contentBase64 && uploaded.fileName) {
+                  const safeFile = uploaded.fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+                  const tmpPath = path.join(this.screenshotsDir, `upload-${Date.now()}-${safeFile}`);
+                  await fs.writeFile(tmpPath, Buffer.from(uploaded.contentBase64, 'base64'));
+                  await page.locator(d.selector).first().setInputFiles(tmpPath);
+                  fieldsFilled.push({
+                    fieldLabel: d.label,
+                    selector: d.selector,
+                    valueFilled: `Uploaded: ${uploaded.fileName}`,
+                  });
+                } else if (shouldDraft) {
+                  const draftedMarkdown = [
+                    `# ${d.label} — ${input.applicantName}`,
+                    '',
+                    `**To:** Hiring / Admissions Team at ${input.targetPlatformName}`,
+                    `**Applicant:** ${input.applicantName} (${input.email} | ${input.phone})`,
+                    `**Role / Opportunity:** ${input.stageOrRole}`,
+                    '',
+                    `## Statement & Motivation`,
+                    input.detailedPitch || input.oneLinePitch,
+                    '',
+                    `I am enthusiastic about the opportunity with **${input.targetPlatformName}** and have attached my full CV and supporting credentials for your review. I welcome the chance to discuss how my background and track record can immediately add value to your team.`,
+                    '',
+                    `Sincerely,`,
+                    `**${input.applicantName}**`,
+                  ].join('\n');
+                  const draftedPdf = await documentGeneratorService.generateDeliverablePdfFromMarkdown(
+                    (input.agentType as AgentType) || AgentType.JOB_AGENT,
+                    draftedMarkdown,
+                    {
+                      candidateName: input.applicantName,
+                      email: input.email,
+                      location: input.location,
+                    },
+                  );
+                  await page.locator(d.selector).first().setInputFiles(draftedPdf.filePath);
+                  fieldsFilled.push({
+                    fieldLabel: d.label,
+                    selector: d.selector,
+                    valueFilled: `AI Drafted: ${draftedPdf.fileName}`,
+                  });
+                }
+              } catch {
+                // non-fatal
+              }
+            }
+          }
+        }
+      }
+
       if (formDetectedOnLiveSite && !hasPasswordField && !hasCaptchaGate) {
         try {
           const submitBtn = page
@@ -140,11 +348,73 @@ export class BrowserFormFillerService {
             .first();
           if (await submitBtn.isVisible({ timeout: 600 })) {
             await submitBtn.click({ timeout: 1500 }).catch(() => undefined);
-            await page.waitForTimeout(800);
+            await page.waitForTimeout(1200);
             submitTriggered = true;
           }
         } catch {
           // non-fatal
+        }
+      }
+
+      // Interactive OTP or Email-Link Verification Pause (when portal asks user for OTP or email confirmation)
+      if (!hasCaptchaGate && input.onVerificationRequired) {
+        const postText = (await page.locator('body').innerText({ timeout: 800 }).catch(() => '')).slice(0, 2500);
+        const otpInput = page
+          .locator(
+            'input[autocomplete="one-time-code"]:visible, input[name*="otp" i]:visible, input[id*="otp" i]:visible, input[placeholder*="otp" i]:visible, input[placeholder*="verification code" i]:visible, input[name*="verification_code" i]:visible',
+          )
+          .first();
+        const hasOtpInput = await otpInput.isVisible({ timeout: 400 }).catch(() => false);
+        const hasOtpPrompt =
+          hasOtpInput ||
+          /\b(?:enter\s+(?:the\s+)?(?:verification|security|one[- ]time|6[- ]digit|4[- ]digit)?\s*(?:code|otp|pin)|verification\s+code\s+sent)\b/i.test(
+            postText,
+          );
+        const hasEmailLinkPrompt =
+          !hasOtpPrompt &&
+          /\b(?:check\s+your\s+email|click\s+(?:the\s+)?(?:verification|confirmation|magic)\s+link|verify\s+your\s+email\s+address|we\s+(?:have\s+)?sent\s+(?:a\s+)?(?:verification|confirmation|magic)\s+link)\b/i.test(
+            postText,
+          );
+
+        if (hasOtpPrompt) {
+          const userResp = await input.onVerificationRequired({
+            type: 'OTP',
+            targetName: input.targetPlatformName,
+            portalUrl: page.url(),
+            message: `${input.targetPlatformName} sent a verification OTP code to your phone (${input.phone}) or email (${input.email}). Please enter the OTP code below so Nexora AI can finish submitting your application.`,
+          });
+          if (userResp.otpCode && !userResp.skipped) {
+            if (hasOtpInput) {
+              await otpInput.fill(userResp.otpCode.trim()).catch(() => undefined);
+              fieldsFilled.push({
+                fieldLabel: 'OTP Verification Code',
+                selector: 'otp-input',
+                valueFilled: '******',
+              });
+              const verifyBtn = page
+                .locator(
+                  'button[type="submit"]:visible, button:has-text("Verify"):visible, button:has-text("Continue"):visible, button:has-text("Confirm"):visible',
+                )
+                .first();
+              if (await verifyBtn.isVisible({ timeout: 600 }).catch(() => false)) {
+                await verifyBtn.click({ timeout: 1500 }).catch(() => undefined);
+                await page.waitForTimeout(1200);
+                submitTriggered = true;
+              }
+            }
+          }
+        } else if (hasEmailLinkPrompt) {
+          const userResp = await input.onVerificationRequired({
+            type: 'EMAIL_LINK',
+            targetName: input.targetPlatformName,
+            portalUrl: page.url(),
+            message: `${input.targetPlatformName} sent a confirmation link to ${input.email}. Please open your email inbox, click the verification link, and then click "I've Clicked the Link — Continue" below.`,
+          });
+          if (userResp.confirmed && !userResp.skipped) {
+            await page.reload({ waitUntil: 'domcontentloaded', timeout: 6000 }).catch(() => undefined);
+            await page.waitForTimeout(1000);
+            submitTriggered = true;
+          }
         }
       }
 

@@ -11,6 +11,8 @@ import { DocumentService } from './documents/document.service';
 import { MemoryService } from './memory/memory.service';
 import { NotificationService } from './notifications/notification.service';
 import { OpenClawService, CustomTurnExecutor } from './openclaw/openclaw.service';
+import { setCvMatcherOpenClawService } from './tools/cv-ai-matcher.service';
+import { autopilotService } from './tools/autopilot.service';
 import { ProjectService } from './projects/project.service';
 import { QueueService } from './queues/queue.service';
 import { redisManager } from './queues/redis.connection';
@@ -33,6 +35,9 @@ export async function createNexoraApplication(options: CreateNexoraApplicationOp
 
   const whatsappService = new WhatsAppService(options.whatsappProvider);
   const openclawService = new OpenClawService(undefined, options.openclawExecutor);
+  setCvMatcherOpenClawService(openclawService);
+  autopilotService.bindRepository(repository);
+  autopilotService.startScheduler();
   const queueService = new QueueService({ useInMemoryDriver: useInMemory });
 
   const customerService = new CustomerService(repository);

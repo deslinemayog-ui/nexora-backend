@@ -1,6 +1,94 @@
 import nodemailer, { type SendMailOptions as NodemailerSendMailOptions } from 'nodemailer';
 import { logger } from '../utils/logger';
 
+export interface EmailDeliveryConfig {
+  mode: 'TEST' | 'LIVE';
+  testRecipientEmail: string;
+  updatedAt: string;
+}
+
+let cachedEmailConfig: { config: EmailDeliveryConfig; fetchedAt: number } | null = null;
+
+export async function getEmailDeliveryConfig(forceRefresh = false): Promise<EmailDeliveryConfig> {
+  const now = Date.now();
+  if (!forceRefresh && cachedEmailConfig && now - cachedEmailConfig.fetchedAt < 10_000) {
+    return cachedEmailConfig.config;
+  }
+
+  const fallback: EmailDeliveryConfig = {
+    mode: process.env.EMAIL_DELIVERY_MODE === 'LIVE' ? 'LIVE' : 'TEST',
+    testRecipientEmail: process.env.TEST_RECIPIENT_EMAIL || 'info@empiredigitals.org',
+    updatedAt: new Date().toISOString(),
+  };
+
+  if (process.env.NODE_ENV === 'test' || process.env.VITEST) {
+    return fallback;
+  }
+
+  try {
+    const projectId = process.env.FIREBASE_PROJECT_ID || 'nexora-d7346';
+    const apiKey = process.env.FIREBASE_API_KEY || 'AIzaSyBjRi92-GpP71HcBUUXknw3vPhX3lSh7dk';
+    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/nexora_system_config/email_delivery?key=${apiKey}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
+    if (res.ok) {
+      const json = (await res.json()) as { fields?: Record<string, any> };
+      const modeVal = json.fields?.mode?.stringValue;
+      const testEmailVal = json.fields?.testRecipientEmail?.stringValue;
+      const updatedVal = json.fields?.updatedAt?.stringValue;
+      const cfg: EmailDeliveryConfig = {
+        mode: modeVal === 'LIVE' ? 'LIVE' : 'TEST',
+        testRecipientEmail: testEmailVal || fallback.testRecipientEmail,
+        updatedAt: updatedVal || fallback.updatedAt,
+      };
+      cachedEmailConfig = { config: cfg, fetchedAt: now };
+      return cfg;
+    }
+    if (res.status === 404) {
+      await setEmailDeliveryConfig(fallback.mode, fallback.testRecipientEmail);
+      return fallback;
+    }
+  } catch {
+    // fallback if offline
+  }
+  return fallback;
+}
+
+export async function setEmailDeliveryConfig(
+  mode: 'TEST' | 'LIVE',
+  testRecipientEmail?: string,
+): Promise<EmailDeliveryConfig> {
+  const cleanEmail = (testRecipientEmail || process.env.TEST_RECIPIENT_EMAIL || 'info@empiredigitals.org').trim();
+  const cfg: EmailDeliveryConfig = {
+    mode,
+    testRecipientEmail: cleanEmail,
+    updatedAt: new Date().toISOString(),
+  };
+  cachedEmailConfig = { config: cfg, fetchedAt: Date.now() };
+
+  if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
+    try {
+      const projectId = process.env.FIREBASE_PROJECT_ID || 'nexora-d7346';
+      const apiKey = process.env.FIREBASE_API_KEY || 'AIzaSyBjRi92-GpP71HcBUUXknw3vPhX3lSh7dk';
+      const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/nexora_system_config/email_delivery?key=${apiKey}`;
+      await fetch(url, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fields: {
+            mode: { stringValue: cfg.mode },
+            testRecipientEmail: { stringValue: cfg.testRecipientEmail },
+            updatedAt: { stringValue: cfg.updatedAt },
+          },
+        }),
+        signal: AbortSignal.timeout(5000),
+      });
+    } catch {
+      // non-fatal
+    }
+  }
+  return cfg;
+}
+
 export interface SendMailOptions {
   to: string;
   html: string;
@@ -9,6 +97,28 @@ export interface SendMailOptions {
   inReplyTo?: string;
   references?: string | string[];
   attachments?: NodemailerSendMailOptions['attachments'];
+}
+
+let sharedSmtpTransporter: ReturnType<typeof nodemailer.createTransport> | null = null;
+
+function getPooledSmtpTransporter(): ReturnType<typeof nodemailer.createTransport> {
+  if (!sharedSmtpTransporter) {
+    sharedSmtpTransporter = nodemailer.createTransport({
+      pool: true,
+      maxConnections: 3,
+      maxMessages: 100,
+      rateDelta: 1000,
+      rateLimit: 3,
+      host: process.env.SMTP_HOST || 'smtp.zoho.com',
+      port: Number(process.env.SMTP_PORT || 465),
+      secure: process.env.SMTP_SECURE ? process.env.SMTP_SECURE === 'true' : true,
+      auth: {
+        user: process.env.SMTP_USER || 'mrdocs@empiredigitals.org',
+        pass: process.env.SMTP_PASS || 'eVc2YpPq1KFq',
+      },
+    });
+  }
+  return sharedSmtpTransporter;
 }
 
 export const sendMail = async ({
@@ -21,15 +131,7 @@ export const sendMail = async ({
   attachments,
 }: SendMailOptions): Promise<{ to: string; status: string; messageId?: string; response?: string }> => {
   return new Promise((resolve, reject) => {
-    const transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST || 'smtp.zoho.com',
-      port: Number(process.env.SMTP_PORT || 465),
-      secure: process.env.SMTP_SECURE ? process.env.SMTP_SECURE === 'true' : true,
-      auth: {
-        user: process.env.SMTP_USER || 'mrdocs@empiredigitals.org',
-        pass: process.env.SMTP_PASS || 'eVc2YpPq1KFq',
-      },
-    });
+    const transporter = getPooledSmtpTransporter();
 
     const resolvedReplyTo = replyTo || process.env.REPLY_TO_EMAIL || process.env.IMAP_USER || undefined;
 
@@ -147,18 +249,17 @@ export const buildApplicationEmailHtml = (
         </div>
         <div style="padding: 12px 16px; background-color: #ffffff;">
           ${payload.documentLinks
-            .map(
-              (d) => `
+        .map(
+          (d) => `
             <div style="padding: 8px 0; border-bottom: 1px solid #f1f5f9; font-size: 13px; display: flex; justify-content: space-between;">
               <span><strong style="color: #4f46e5;">[${escapeHtml(d.docType)}]</strong> ${escapeHtml(d.label || d.fileName)} <span style="color: #64748b;">(${escapeHtml(d.fileName)})</span></span>
-              ${
-                d.url && /^https?:\/\//i.test(d.url)
-                  ? ` — <a href="${escapeHtml(d.url)}" style="color: #2563eb; font-weight: 600; text-decoration: none;">Download</a>`
-                  : ''
-              }
+              ${d.url && /^https?:\/\//i.test(d.url)
+              ? ` — <a href="${escapeHtml(d.url)}" style="color: #2563eb; font-weight: 600; text-decoration: none;">Download</a>`
+              : ''
+            }
             </div>`,
-            )
-            .join('')}
+        )
+        .join('')}
         </div>
       </div>`
       : '';
@@ -178,27 +279,27 @@ export const buildApplicationEmailHtml = (
 
   const ctaContent = isVisa
     ? {
-        title: 'Immigration or Relocation Agency?',
-        desc: 'Join <strong>Nexora AI</strong> to receive pre-screened relocation applicants with verified passports, permits, police clearances &amp; eligibility checklists — 10% commission only on accepted cases.',
-        btn: 'Create Free Immigration Agency Portal',
-      }
+      title: 'Immigration or Relocation Agency?',
+      desc: 'Join <strong>Nexora AI</strong> to receive pre-screened relocation applicants with verified passports, permits, police clearances &amp; eligibility checklists — 10% commission only on accepted cases.',
+      btn: 'Create Free Immigration Agency Portal',
+    }
     : isEdu
       ? {
-          title: 'University or Scholarship Provider?',
-          desc: 'Join <strong>Nexora AI</strong> to receive vetted student applicants with academic transcripts, statements of purpose &amp; verified credentials in one portal.',
-          btn: 'Create Free Scholarship Portal',
-        }
+        title: 'University or Scholarship Provider?',
+        desc: 'Join <strong>Nexora AI</strong> to receive vetted student applicants with academic transcripts, statements of purpose &amp; verified credentials in one portal.',
+        btn: 'Create Free Scholarship Portal',
+      }
       : isInvestor
         ? {
-            title: 'VC Fund, Angel Investor, or Accelerator?',
-            desc: 'Join <strong>Nexora AI</strong> to receive curated founder deal flow with pitch decks, financial models, and due diligence checklists.',
-            btn: 'Create Free Investor Portal',
-          }
+          title: 'VC Fund, Angel Investor, or Accelerator?',
+          desc: 'Join <strong>Nexora AI</strong> to receive curated founder deal flow with pitch decks, financial models, and due diligence checklists.',
+          btn: 'Create Free Investor Portal',
+        }
         : {
-            title: 'Hiring or Recruiting Top Talent?',
-            desc: 'Join <strong>Nexora AI</strong> to receive AI-scored CVs (0–100%), verified candidate assessment transcripts, and schedule interviews in one click.',
-            btn: 'Create Free Company Portal',
-          };
+          title: 'Hiring or Recruiting Top Talent?',
+          desc: 'Join <strong>Nexora AI</strong> to receive AI-scored CVs (0–100%), verified candidate assessment transcripts, and schedule interviews in one click.',
+          btn: 'Create Free Company Portal',
+        };
 
   return `
 <!DOCTYPE html>
@@ -208,8 +309,8 @@ export const buildApplicationEmailHtml = (
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>${escapeHtml(finalSubject)}</title>
 </head>
-<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 20px 12px; background-color: #f1f5f9; color: #0f172a;">
-  <div style="max-width: 660px; margin: 0 auto; background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 25px rgba(15, 23, 42, 0.08); border: 1px solid #e2e8f0;">
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; margin: 0; color: #0f172a;">
+  <div style="max-width: 660px; margin: 0 auto; background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 5px 10px rgba(15, 23, 42, 0.08); border: 1px solid #e2e8f0;">
     
     <div style="background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 60%, #312e81 100%); color: #ffffff; padding: 28px 30px;">
       <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 1.4px; color: #38bdf8; font-weight: 700; margin-bottom: 8px;">
@@ -302,8 +403,11 @@ export const sendApplicationEmailOnBehalfOfUser = async (
   smtpResponse?: string;
   messageId?: string;
 }> => {
-  // Always route to info@empiredigitals.org in test mode so real external VCs/employers are not spammed during testing
-  const targetRecipient = process.env.TEST_RECIPIENT_EMAIL || 'info@empiredigitals.org';
+  const deliveryConfig = await getEmailDeliveryConfig();
+  const targetRecipient =
+    deliveryConfig.mode === 'LIVE' && payload.intendedRecipientEmail?.includes('@')
+      ? payload.intendedRecipientEmail
+      : deliveryConfig.testRecipientEmail || 'info@empiredigitals.org';
   const finalSubject = payload.subject;
   const html = buildApplicationEmailHtml(payload, targetRecipient);
 

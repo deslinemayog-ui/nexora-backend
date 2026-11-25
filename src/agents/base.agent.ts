@@ -166,10 +166,13 @@ export abstract class BaseSpecialistAgent implements ISpecialistAgent {
         ].join('\n')
       : '';
 
+    const resolvedUid =
+      autonomousWorkerService.getSessionUserUid(context.customerId) || context.customerId;
     const supportingDocs = platformStore
       .getState()
       .supportingDocuments.filter(
         (d) =>
+          d.userUid === resolvedUid ||
           d.userUid === context.customerId ||
           (context.sessionKey && context.sessionKey.includes(d.userUid)),
       );
@@ -180,10 +183,16 @@ export abstract class BaseSpecialistAgent implements ISpecialistAgent {
             .join('\n')}`
         : '';
 
+    const uploadedCvDoc = supportingDocs.find((d) => d.docType === 'CV');
+    const cvRuleBlock = uploadedCvDoc
+      ? `USER ALREADY UPLOADED OWN CV (${uploadedCvDoc.fileName}): DO NOT draft, rewrite, or generate a new CV! Use their uploaded CV as-is.`
+      : '';
+
     return [
       `You are the ${this.name} within the Nexora AI Autonomous Workforce Platform.`,
       `Role Description: ${this.description}`,
       ...directiveBlock,
+      cvRuleBlock,
       deepThinkBlock,
       'DOMAIN RULES:',
       ...this.buildDomainRules().map((rule, idx) => `${idx + 1}. ${rule}`),
@@ -236,9 +245,13 @@ export abstract class BaseSpecialistAgent implements ISpecialistAgent {
         this.agentType === AgentType.EDUCATION_AGENT
       ) {
         const history = context?.conversationContext ?? [];
+        const resolvedUid =
+          autonomousWorkerService.getSessionUserUid(context?.customerId) || context?.customerId;
         const hasSupportingDoc = platformStore
           .getState()
-          .supportingDocuments.some((d) => d.userUid === context?.customerId);
+          .supportingDocuments.some(
+            (d) => d.userUid === resolvedUid || d.userUid === context?.customerId,
+          );
         const hasCompiledOrUploadedDeliverable =
           Boolean(context?.sessionKey && latestDraftedDocBySession.has(context.sessionKey)) ||
           Boolean(context?.sessionKey && latestReviewedPdfBySession.has(context.sessionKey)) ||
@@ -343,7 +356,65 @@ export abstract class BaseSpecialistAgent implements ISpecialistAgent {
         this.agentType === AgentType.INVESTOR_AGENT ||
         this.agentType === AgentType.EDUCATION_AGENT;
 
-      if (env.NODE_ENV !== 'test' && isPdfReviewAgent && isCompiledDeliverable) {
+      const resolvedUidForDoc =
+        autonomousWorkerService.getSessionUserUid(context.customerId) || context.customerId;
+      const primaryDocTypesByAgent: Record<string, string[]> = {
+        [AgentType.JOB_AGENT]: ['CV'],
+        [AgentType.VISA_AGENT]: ['CV', 'RELOCATION_DOSSIER'],
+        [AgentType.INVESTOR_AGENT]: ['PITCH_DECK', 'BUSINESS_PLAN'],
+        [AgentType.EDUCATION_AGENT]: ['MOTIVATION_LETTER', 'SOP', 'CV'],
+      };
+      const allowedPrimaryTypes = primaryDocTypesByAgent[this.agentType] || [];
+      const uploadedPrimaryDocRecord =
+        allowedPrimaryTypes.length > 0
+          ? platformStore
+              .getState()
+              .supportingDocuments.find(
+                (d) =>
+                  (d.userUid === resolvedUidForDoc || d.userUid === context.customerId) &&
+                  (d.agentType === this.agentType || this.agentType === AgentType.JOB_AGENT) &&
+                  allowedPrimaryTypes.includes(d.docType),
+              )
+          : undefined;
+      const userHasUploadedPrimaryDoc =
+        isPdfReviewAgent &&
+        (Boolean(uploadedPrimaryDocRecord) ||
+          /\[attached/i.test(context.userMessage) ||
+          (context.conversationContext || []).some((m) => m.role === 'user' && /\.pdf\b|\[attached/i.test(m.content)));
+      const explicitlyRequestedNewDoc =
+        /\b(?:create|draft|rewrite|generate|make)\s+(?:a\s+|me\s+a\s+)?(?:new\s+)?(?:cv|resume|pitch\s+deck|motivation\s+letter|dossier|document|pdf)\b/i.test(
+          context.userMessage,
+        );
+
+      if (userHasUploadedPrimaryDoc && !explicitlyRequestedNewDoc && uploadedPrimaryDocRecord) {
+        const existingPrimaryDoc: GeneratedDocumentResult = {
+          fileName: uploadedPrimaryDocRecord.fileName,
+          filePath: path.resolve(
+            process.cwd(),
+            'node_modules',
+            '.cache',
+            'nexora-documents',
+            uploadedPrimaryDocRecord.storedFileName,
+          ),
+          fileSizeBytes: uploadedPrimaryDocRecord.fileSizeBytes || 0,
+          estimatedPages: 1,
+          downloadUrl: uploadedPrimaryDocRecord.downloadUrl,
+          createdAt: uploadedPrimaryDocRecord.createdAt,
+        };
+        latestReviewedPdfBySession.set(context.sessionKey, existingPrimaryDoc);
+        return {
+          ...normalizedTurnOutput,
+          responseText: `I have your uploaded document (**${uploadedPrimaryDocRecord.fileName}**) on file — no new document needs to be generated. Please review it below or reply **Yes** / click **Approve & Submit** to proceed with your document.`,
+          generatedDocument: existingPrimaryDoc,
+        };
+      }
+
+      if (
+        env.NODE_ENV !== 'test' &&
+        isPdfReviewAgent &&
+        isCompiledDeliverable &&
+        !(userHasUploadedPrimaryDoc && !explicitlyRequestedNewDoc)
+      ) {
         try {
           latestDraftedDocBySession.set(context.sessionKey, normalizedTurnOutput.responseText);
 

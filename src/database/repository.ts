@@ -449,6 +449,30 @@ export class NexoraRepository {
     }
     conv.lastMessageAt = now;
     conv.updatedAt = now;
+
+    if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
+      const projectId = process.env.FIREBASE_PROJECT_ID || 'nexora-d7346';
+      const apiKey = process.env.FIREBASE_API_KEY || 'AIzaSyBjRi92-GpP71HcBUUXknw3vPhX3lSh7dk';
+      const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/nexora_messages/${encodeURIComponent(message.id)}?key=${apiKey}`;
+      void fetch(url, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fields: {
+            id: { stringValue: message.id },
+            customerId: { stringValue: message.customerId },
+            conversationId: { stringValue: message.conversationId },
+            direction: { stringValue: String(message.direction) },
+            messageType: { stringValue: String(message.messageType) },
+            content: { stringValue: message.content },
+            routedAgentType: { stringValue: String(message.routedAgentType || '') },
+            createdAt: { stringValue: now.toISOString() },
+          },
+        }),
+        signal: AbortSignal.timeout(5000),
+      }).catch(() => undefined);
+    }
+
     return { ...message };
   }
 
@@ -1377,7 +1401,113 @@ export class NexoraRepository {
     return 100;
   }
 
-  public async getCustomerWallet(customerId: string): Promise<{
+  private resolveWalletKey(customerId: string, userUid?: string): string {
+    if (userUid && userUid !== 'guest-user') {
+      return `uid_${userUid}`;
+    }
+    const cust = this.customers.get(customerId);
+    if (cust?.whatsappNumber) {
+      const digits = cust.whatsappNumber.replace(/\D/g, '');
+      if (digits) return `phone_${digits}`;
+    }
+    return customerId;
+  }
+
+  private async fetchWalletFromFirebase(walletKey: string, userUid?: string): Promise<number | null> {
+    if (process.env.NODE_ENV === 'test' || process.env.VITEST) return null;
+    const projectId = process.env.FIREBASE_PROJECT_ID || 'nexora-d7346';
+    const apiKey = process.env.FIREBASE_API_KEY || 'AIzaSyBjRi92-GpP71HcBUUXknw3vPhX3lSh7dk';
+    const base = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents`;
+
+    // Primary: read creditBalanceCents directly from users/<userUid>
+    if (userUid && userUid !== 'guest-user') {
+      try {
+        const res = await fetch(`${base}/users/${encodeURIComponent(userUid)}?key=${apiKey}`, {
+          signal: AbortSignal.timeout(5000),
+        });
+        if (res.ok) {
+          const json = (await res.json()) as { fields?: Record<string, any> };
+          const raw =
+            json.fields?.creditBalanceCents?.integerValue ??
+            json.fields?.creditBalanceCents?.doubleValue;
+          if (raw !== undefined && raw !== null) {
+            const num = Number(raw);
+            if (Number.isFinite(num)) return Math.max(0, Math.round(num));
+          }
+        }
+      } catch {
+        // fallback below
+      }
+    }
+
+    try {
+      const url = `${base}/nexora_wallets/${encodeURIComponent(walletKey)}?key=${apiKey}`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+      if (!res.ok) return null;
+      const json = (await res.json()) as { fields?: Record<string, any> };
+      const raw = json.fields?.balanceCents?.integerValue ?? json.fields?.balanceCents?.doubleValue;
+      if (raw !== undefined && raw !== null) {
+        const num = Number(raw);
+        if (Number.isFinite(num)) return Math.max(0, Math.round(num));
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async syncWalletToFirebase(walletKey: string, balanceCents: number, userUid?: string): Promise<void> {
+    if (process.env.NODE_ENV === 'test' || process.env.VITEST) return;
+    const projectId = process.env.FIREBASE_PROJECT_ID || 'nexora-d7346';
+    const apiKey = process.env.FIREBASE_API_KEY || 'AIzaSyBjRi92-GpP71HcBUUXknw3vPhX3lSh7dk';
+    const base = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents`;
+    const cleanCents = Math.max(0, Math.round(balanceCents));
+    const nowIso = new Date().toISOString();
+
+    // Primary: persist creditBalanceCents directly on users/<userUid> (using updateMask to preserve profile/prerequisites)
+    if (userUid && userUid !== 'guest-user') {
+      try {
+        const userUrl = `${base}/users/${encodeURIComponent(userUid)}?updateMask.fieldPaths=creditBalanceCents&updateMask.fieldPaths=updatedAt&key=${apiKey}`;
+        await fetch(userUrl, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            fields: {
+              creditBalanceCents: { integerValue: String(cleanCents) },
+              updatedAt: { stringValue: nowIso },
+            },
+          }),
+          signal: AbortSignal.timeout(5000),
+        });
+        return;
+      } catch {
+        // fallback below
+      }
+    }
+
+    try {
+      const url = `${base}/nexora_wallets/${encodeURIComponent(walletKey)}?key=${apiKey}`;
+      await fetch(url, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fields: {
+            walletKey: { stringValue: walletKey },
+            balanceCents: { integerValue: String(cleanCents) },
+            updatedAt: { stringValue: nowIso },
+          },
+        }),
+        signal: AbortSignal.timeout(5000),
+      });
+    } catch {
+      // non-fatal
+    }
+  }
+
+  public async getCustomerWallet(
+    customerId: string,
+    userUid?: string,
+  ): Promise<{
     customerId: string;
     balanceCents: number;
     balanceDollars: string;
@@ -1395,11 +1525,17 @@ export class NexoraRepository {
     }
 
     this.loadWalletStore();
-    if (!this.walletBalances.has(customerId)) {
-      this.walletBalances.set(customerId, 500);
+    const walletKey = this.resolveWalletKey(customerId, userUid);
+    const remoteCents = await this.fetchWalletFromFirebase(walletKey, userUid);
+    if (remoteCents !== null) {
+      this.walletBalances.set(walletKey, remoteCents);
       this.saveWalletStore();
+    } else if (!this.walletBalances.has(walletKey)) {
+      this.walletBalances.set(walletKey, 500);
+      this.saveWalletStore();
+      void this.syncWalletToFirebase(walletKey, 500, userUid);
     }
-    const cents = this.walletBalances.get(customerId) ?? 500;
+    const cents = this.walletBalances.get(walletKey) ?? 500;
     return {
       customerId,
       balanceCents: cents,
@@ -1413,6 +1549,7 @@ export class NexoraRepository {
     agentType: AgentType,
     submissionCount: number,
     overrideUnitCostCents?: number,
+    userUid?: string,
   ): Promise<{
     chargedCents: number;
     remainingBalanceCents: number;
@@ -1444,10 +1581,18 @@ export class NexoraRepository {
     }
 
     this.loadWalletStore();
-    const current = this.walletBalances.has(customerId) ? this.walletBalances.get(customerId)! : 500;
+    const walletKey = this.resolveWalletKey(customerId, userUid);
+    const remoteCents = await this.fetchWalletFromFirebase(walletKey, userUid);
+    const current =
+      remoteCents !== null
+        ? remoteCents
+        : this.walletBalances.has(walletKey)
+          ? this.walletBalances.get(walletKey)!
+          : 500;
     const next = Math.max(0, current - totalCharge);
-    this.walletBalances.set(customerId, next);
+    this.walletBalances.set(walletKey, next);
     this.saveWalletStore();
+    await this.syncWalletToFirebase(walletKey, next, userUid);
 
     return {
       chargedCents: totalCharge,
@@ -1461,6 +1606,7 @@ export class NexoraRepository {
     customerId: string,
     amountCents: number,
     reference: string,
+    userUid?: string,
   ): Promise<{
     credited: boolean;
     alreadyProcessed: boolean;
@@ -1469,7 +1615,7 @@ export class NexoraRepository {
   }> {
     this.loadWalletStore();
     if (this.creditedPaystackRefs.has(reference)) {
-      const wallet = await this.getCustomerWallet(customerId);
+      const wallet = await this.getCustomerWallet(customerId, userUid);
       return {
         credited: false,
         alreadyProcessed: true,
@@ -1500,9 +1646,18 @@ export class NexoraRepository {
       };
     }
 
-    const current = this.walletBalances.has(customerId) ? this.walletBalances.get(customerId)! : 500;
+    const walletKey = this.resolveWalletKey(customerId, userUid);
+    const remoteCents = await this.fetchWalletFromFirebase(walletKey, userUid);
+    const current =
+      remoteCents !== null
+        ? remoteCents
+        : this.walletBalances.has(walletKey)
+          ? this.walletBalances.get(walletKey)!
+          : 500;
     const next = current + addAmount;
-    this.walletBalances.set(customerId, next);
+    this.walletBalances.set(walletKey, next);
+    this.saveWalletStore();
+    await this.syncWalletToFirebase(walletKey, next, userUid);
     this.saveWalletStore();
 
     return {

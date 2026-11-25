@@ -5,6 +5,7 @@ import { logger } from '../utils/logger';
 import { NEXORA_LOGO_BASE64, NEXORA_ICON_BASE64 } from '../assets/logo';
 import { AgentType } from '../database/types';
 import { sendMail } from './email.service';
+import { uploadToFirebaseStorage } from './firebase-storage.service';
 
 export interface DocumentSection {
   title: string;
@@ -184,12 +185,17 @@ export class DocumentGeneratorService {
         }
       }
 
+      const pdfBuf = await fs.readFile(filePath).catch(() => null);
+      const firebaseUrl = pdfBuf
+        ? await uploadToFirebaseStorage(`documents/${fileName}`, pdfBuf, 'application/pdf')
+        : null;
+
       return {
         fileName,
         filePath,
         fileSizeBytes: stats.size,
         estimatedPages: options.targetPages || 12,
-        downloadUrl: `/api/v1/documents/download/${fileName}`,
+        downloadUrl: firebaseUrl || `/api/v1/documents/download/${fileName}`,
         emailedTo,
         smtpMessageId,
         createdAt: new Date().toISOString(),
@@ -1076,12 +1082,17 @@ export class DocumentGeneratorService {
       });
 
       const stats = await fs.stat(filePath);
+      const pdfBuf = await fs.readFile(filePath).catch(() => null);
+      const firebaseUrl = pdfBuf
+        ? await uploadToFirebaseStorage(`documents/${fileName}`, pdfBuf, 'application/pdf')
+        : null;
+
       return {
         fileName,
         filePath,
         fileSizeBytes: stats.size,
         estimatedPages: 1,
-        downloadUrl: `/api/v1/documents/download/${fileName}`,
+        downloadUrl: firebaseUrl || `/api/v1/documents/download/${fileName}`,
         createdAt: new Date().toISOString(),
       };
     } finally {

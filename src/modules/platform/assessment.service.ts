@@ -218,14 +218,16 @@ export class AssessmentService {
       throw new Error(`Prerequisites incomplete: ${prereqCheck.missing.join(', ')}`);
     }
 
-    // Recover active in-progress session on page refresh if not expired and not stale placeholder
+    // Recover active in-progress session on page refresh if not expired, not stale placeholder,
+    // and not a legacy unshuffled all-A session
     const existingActive = state.sessions.find(
       (s) =>
         s.assignmentId === asg.id &&
         s.userUid === params.userUid &&
         !s.isCompleted &&
         Date.now() < new Date(s.expiresAt).getTime() &&
-        !s.questions.some((q) => q.statement.includes('faces conflicting requirements and a strict deadline')),
+        !s.questions.some((q) => q.statement.includes('faces conflicting requirements and a strict deadline')) &&
+        s.questions.some((q) => q.correctIndex !== 0),
     );
     if (existingActive) {
       return {
@@ -237,8 +239,17 @@ export class AssessmentService {
       };
     }
 
+    // Collect previously asked question statements for this user + assignment so retakes get fresh questions
+    const previousStatements = Array.from(
+      new Set(
+        state.sessions
+          .filter((s) => s.assignmentId === asg.id && s.userUid === params.userUid)
+          .flatMap((s) => (s.questions || []).map((q) => q.statement)),
+      ),
+    ).slice(-45);
+
     const sessionId = `ses-${crypto.randomUUID().slice(0, 10)}`;
-    const questions = await this.generateTailoredQuestions(asg, sessionId);
+    const questions = await this.generateTailoredQuestions(asg, sessionId, previousStatements);
     const nowMs = Date.now();
     const startedAt = new Date(nowMs).toISOString();
     const expiresAt = new Date(nowMs + asg.durationMinutes * 60_000).toISOString();
@@ -499,9 +510,33 @@ export class AssessmentService {
     }
   }
 
+  private shuffleArray<T>(items: T[]): T[] {
+    const arr = [...items];
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = crypto.randomInt(0, i + 1);
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    return arr;
+  }
+
+  private shuffleQuestionOptions(
+    options: string[],
+    correctIndex: number,
+  ): { options: string[]; correctIndex: number } {
+    const safeIdx = correctIndex >= 0 && correctIndex < options.length ? correctIndex : 0;
+    const tagged = options.map((text, idx) => ({ text, isCorrect: idx === safeIdx }));
+    const shuffled = this.shuffleArray(tagged);
+    const newCorrectIndex = shuffled.findIndex((item) => item.isCorrect);
+    return {
+      options: shuffled.map((item) => item.text),
+      correctIndex: newCorrectIndex >= 0 ? newCorrectIndex : 0,
+    };
+  }
+
   private async generateTailoredQuestions(
     asg: AssignmentRecord,
     sessionId: string,
+    previousStatements: string[] = [],
   ): Promise<AssessmentQuestionRecord[]> {
     const p = asg.prerequisiteData || {};
     const roleOrField = String(
@@ -517,20 +552,27 @@ export class AssessmentService {
           ? `Field of Study: ${p.fieldOfStudy || 'Not specified'}, Programme: ${p.intendedProgramme || 'Postgraduate'}, Achievements: ${p.achievements || 'Not specified'}, Motivation: ${p.motivationStatement || ''}`
           : '';
     const cvText = await this.readCvTextSnippet(p.cvFileName);
+    const attemptSeed = crypto.randomBytes(4).toString('hex');
 
     if (this.openclawService && process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
       try {
         const prompt = [
-          `Generate exactly 15 varied, non-repetitive multiple-choice assessment questions in strict JSON array format.`,
+          `Generate exactly 15 fresh, varied, non-repetitive multiple-choice assessment questions in strict JSON array format (Attempt Seed: ${attemptSeed}).`,
           `Category: ${asg.category}. Target Job Role / Field: ${roleOrField}. Candidate Experience: ${yearsExp} years.`,
           `Skills / Qualifications: ${skills || 'Not specified'}.`,
           extraContext ? `Category Details: ${extraContext}` : '',
           cvText
             ? `Candidate CV Content (use this directly to tailor technical & scenario questions to their actual stack, projects, and experience):\n${cvText}`
             : `Candidate Background / Notes: ${cvSummary || 'General professional'}`,
+          previousStatements.length > 0
+            ? `CRITICAL: This candidate has already seen these questions in earlier attempts. Generate 15 COMPLETELY DIFFERENT questions covering new angles, edge cases, and scenarios — do NOT repeat or paraphrase any of these:\n${previousStatements.slice(-25).map((s, i) => `${i + 1}. ${s}`).join('\n')}`
+            : '',
           `Difficulty mix: 5 INTERMEDIATE, 5 ADVANCED, 5 HARD. Avoid trivial beginner questions and never repeat question templates. Tailor every question specifically to "${roleOrField}" and the candidate's CV.`,
+          `IMPORTANT: Distribute correctIndex evenly across 0, 1, 2, and 3 (do NOT put every correct answer at index 0).`,
           `Return ONLY a valid JSON array of 15 objects with keys: statement (string), options (array of exactly 4 strings), correctIndex (0-3), difficulty ("INTERMEDIATE"|"ADVANCED"|"HARD"), topic (string), explanation (string), allocatedSec (number 60-120).`,
-        ].join('\n');
+        ]
+          .filter(Boolean)
+          .join('\n');
 
         const safeTenantId = asg.customerId.replace(/[^a-zA-Z0-9_-]/g, '') || 'web_studio';
         const sessionKey =
@@ -545,41 +587,52 @@ export class AssessmentService {
           sessionKey,
           userMessage: prompt,
           systemInstructions:
-            'You are Nexora AI Assessment Examiner. Return ONLY a valid JSON array of 15 assessment questions tailored to the Target Job Role and CV. No markdown fences or extra prose.',
+            'You are Nexora AI Assessment Examiner. Return ONLY a valid JSON array of 15 fresh assessment questions tailored to the Target Job Role and CV. Vary correctIndex across 0-3. No markdown fences or extra prose.',
           timeoutMs: 65_000,
         });
 
-        const match = aiRes.responseText.match(/\[[\s\S]*\]/);
+        const cleaned = (aiRes.responseText || '').replace(/```json\s*/gi, '').replace(/```\s*/g, '');
+        const match = cleaned.match(/\[[\s\S]*\]/);
         if (match) {
           const parsed = JSON.parse(match[0]) as Array<Partial<AssessmentQuestionRecord>>;
           if (Array.isArray(parsed) && parsed.length >= 10) {
-            return parsed.slice(0, 15).map((q, idx) => ({
-              id: `q-${sessionId}-${idx + 1}`,
-              sessionId,
-              questionOrder: idx + 1,
-              statement: String(q.statement || `Scenario Question ${idx + 1}`),
-              options:
+            const shuffledQuestions = this.shuffleArray(parsed.slice(0, 15));
+            return shuffledQuestions.map((q, idx) => {
+              const rawOptions =
                 Array.isArray(q.options) && q.options.length === 4
                   ? q.options.map(String)
-                  : ['Option A', 'Option B', 'Option C', 'Option D'],
-              correctIndex:
+                  : ['Option A', 'Option B', 'Option C', 'Option D'];
+              const rawCorrect =
                 typeof q.correctIndex === 'number' && q.correctIndex >= 0 && q.correctIndex <= 3
                   ? q.correctIndex
-                  : 0,
-              difficulty:
-                q.difficulty === 'HARD' || q.difficulty === 'ADVANCED' ? q.difficulty : 'INTERMEDIATE',
-              topic: String(q.topic || roleOrField),
-              explanation: String(q.explanation || 'Verified best-practice answer.'),
-              allocatedSec: typeof q.allocatedSec === 'number' ? q.allocatedSec : 90,
-            }));
+                  : 0;
+              const { options, correctIndex } = this.shuffleQuestionOptions(rawOptions, rawCorrect);
+              return {
+                id: `q-${sessionId}-${idx + 1}`,
+                sessionId,
+                questionOrder: idx + 1,
+                statement: String(q.statement || `Scenario Question ${idx + 1}`),
+                options,
+                correctIndex,
+                difficulty:
+                  q.difficulty === 'HARD' || q.difficulty === 'ADVANCED' ? q.difficulty : 'INTERMEDIATE',
+                topic: String(q.topic || roleOrField),
+                explanation: String(q.explanation || 'Verified best-practice answer.'),
+                allocatedSec: typeof q.allocatedSec === 'number' ? q.allocatedSec : 90,
+              };
+            });
           }
         }
+        logger.warn(
+          { responsePreview: cleaned.slice(0, 240) },
+          'OpenClaw assessment response did not contain a valid 10+ question JSON array; using shuffled domain bank',
+        );
       } catch (err) {
-        logger.warn({ err }, 'OpenClaw question generation failed; falling back to domain bank');
+        logger.warn({ err }, 'OpenClaw question generation failed; falling back to shuffled domain bank');
       }
     }
 
-    return this.buildDomainFallbackQuestions(asg, sessionId, roleOrField, skills);
+    return this.buildDomainFallbackQuestions(asg, sessionId, roleOrField, skills, previousStatements);
   }
 
   private buildDomainFallbackQuestions(
@@ -587,6 +640,7 @@ export class AssessmentService {
     sessionId: string,
     roleOrField: string,
     skills: string,
+    previousStatements: string[] = [],
   ): AssessmentQuestionRecord[] {
     const contextText = `${roleOrField} ${skills} ${asg.title}`.toLowerCase();
     const bank: Array<Omit<AssessmentQuestionRecord, 'id' | 'sessionId' | 'questionOrder'>> =
@@ -804,6 +858,90 @@ export class AssessmentService {
               explanation: 'Parameterized/prepared statements separate SQL syntax from user-supplied data.',
               allocatedSec: 75,
             },
+            {
+              statement: 'In a React Native / mobile app, a FlatList with 2,000 items drops frames while scrolling. Which combination best improves scroll performance?',
+              options: [
+                'Memoize row items (`React.memo`), provide stable `keyExtractor` and `getItemLayout`, and tune `windowSize`/`maxToRenderPerBatch`',
+                'Replace `FlatList` with a plain `ScrollView` rendering all 2,000 items at once',
+                'Call `setState` inside every row’s `render` method on scroll',
+                'Disable image caching so every row re-downloads assets on scroll',
+              ],
+              correctIndex: 0,
+              difficulty: 'ADVANCED',
+              topic: 'Mobile & React Native',
+              explanation: 'Virtualization tuning plus `React.memo` and `getItemLayout` eliminates layout thrashing and redundant renders.',
+              allocatedSec: 90,
+            },
+            {
+              statement: 'You need to deploy a breaking database column rename with zero downtime while old and new app instances run concurrently. What is the safest migration strategy?',
+              options: [
+                'Expand-and-contract: add the new column, dual-write/backfill, switch reads to the new column, then drop the old column in a later deploy',
+                'Run `ALTER TABLE ... RENAME COLUMN` directly during peak traffic before deploying app code',
+                'Drop the table and recreate it from a local CSV backup',
+                'Disable all database writes for 24 hours without notifying users',
+              ],
+              correctIndex: 0,
+              difficulty: 'HARD',
+              topic: 'Zero-Downtime Migrations',
+              explanation: 'Expand-and-contract maintains backward compatibility across rolling deployments.',
+              allocatedSec: 100,
+            },
+            {
+              statement: 'How does Cross-Site Request Forgery (CSRF) differ from Cross-Site Scripting (XSS), and how is cookie-based auth protected against CSRF?',
+              options: [
+                'CSRF abuses ambient browser credentials on cross-origin requests; mitigate with `SameSite=Lax/Strict` cookies and anti-CSRF tokens',
+                'CSRF injects SQL into PostgreSQL; mitigate by minifying JavaScript',
+                'XSS and CSRF are identical and both are fully solved by enabling gzip compression',
+                'CSRF only occurs over WebSockets and cannot affect HTTP POST endpoints',
+              ],
+              correctIndex: 0,
+              difficulty: 'ADVANCED',
+              topic: 'Web Security',
+              explanation: 'SameSite cookie attributes and synchronizer/double-submit CSRF tokens block forged cross-site state changes.',
+              allocatedSec: 90,
+            },
+            {
+              statement: 'In AWS / cloud architectures, why should long-running email or document processing jobs be decoupled behind a queue (e.g., SQS) rather than executed synchronously in an HTTP request?',
+              options: [
+                'Queues absorb traffic spikes, prevent HTTP timeouts, and enable controlled retries with dead-letter queues for failed jobs',
+                'Queues eliminate the need for authentication on public endpoints',
+                'HTTP servers cannot send JSON responses larger than 1 KB',
+                'Queues automatically fix syntax errors in worker code',
+              ],
+              correctIndex: 0,
+              difficulty: 'INTERMEDIATE',
+              topic: 'Cloud Architecture',
+              explanation: 'Asynchronous queues improve resilience, latency, and fault isolation under load.',
+              allocatedSec: 85,
+            },
+            {
+              statement: 'When implementing cursor-based pagination vs offset-based pagination (`OFFSET 10000 LIMIT 20`) on a rapidly changing table, why is cursor pagination preferred?',
+              options: [
+                'Cursor pagination avoids scanning/discarding skipped rows and prevents duplicate or skipped items when new rows are inserted',
+                'Offset pagination does not support `ORDER BY` clauses in SQL',
+                'Cursor pagination removes the need for any index on the sort column',
+                'Offset pagination can only return 10 rows per query',
+              ],
+              correctIndex: 0,
+              difficulty: 'HARD',
+              topic: 'API & Database Scaling',
+              explanation: 'Keyset/cursor pagination runs in O(log N) via index seek and stays stable under concurrent writes.',
+              allocatedSec: 95,
+            },
+            {
+              statement: 'In TypeScript, what is the practical advantage of using `unknown` over `any` for untrusted API responses or caught errors?',
+              options: [
+                '`unknown` forces explicit type narrowing or schema validation before accessing properties, preventing silent runtime TypeErrors',
+                '`unknown` disables all type checking across the entire file',
+                '`unknown` automatically converts JSON strings into class instances at runtime',
+                '`any` is rejected by Node.js at runtime',
+              ],
+              correctIndex: 0,
+              difficulty: 'INTERMEDIATE',
+              topic: 'TypeScript Safety',
+              explanation: '`unknown` is type-safe: you must validate or narrow the value before using it.',
+              allocatedSec: 75,
+            },
           ]
         : asg.category === 'RELOCATION'
           ? [
@@ -952,12 +1090,21 @@ export class AssessmentService {
       'Architecture & Execution',
     ];
 
+    // Prioritize unseen questions first, then shuffle both order and options (A/B/C/D)
+    const prevSet = new Set(previousStatements);
+    const unseen = this.shuffleArray(bank.filter((q) => !prevSet.has(q.statement)));
+    const seen = this.shuffleArray(bank.filter((q) => prevSet.has(q.statement)));
+    const orderedBank = [...unseen, ...seen];
+
     const result: AssessmentQuestionRecord[] = [];
     for (let i = 0; i < 15; i++) {
-      const preset = bank[i];
+      const preset = orderedBank[i];
       if (preset) {
+        const { options, correctIndex } = this.shuffleQuestionOptions(preset.options, preset.correctIndex);
         result.push({
           ...preset,
+          options,
+          correctIndex,
           id: `q-${sessionId}-${i + 1}`,
           sessionId,
           questionOrder: i + 1,
@@ -965,18 +1112,20 @@ export class AssessmentService {
       } else {
         const diff = difficulties[i % 3];
         const topic = topics[i % topics.length];
+        const rawOptions = [
+          'Validate core requirements with stakeholders, document trade-offs/risks, execute the highest-impact items first, and verify quality before handoff',
+          'Skip quality verification completely and submit unreviewed work',
+          'Change scope silently without informing stakeholders or documenting decisions',
+          'Wait indefinitely without escalating blockers or proposing alternatives',
+        ];
+        const { options, correctIndex } = this.shuffleQuestionOptions(rawOptions, 0);
         result.push({
           id: `q-${sessionId}-${i + 1}`,
           sessionId,
           questionOrder: i + 1,
           statement: `[${diff}] In a ${roleOrField} role (${topic}), a deliverable faces conflicting requirements and a strict deadline. Which action demonstrates the strongest professional judgment?`,
-          options: [
-            'Validate core requirements with stakeholders, document trade-offs/risks, execute the highest-impact items first, and verify quality before handoff',
-            'Skip quality verification completely and submit unreviewed work',
-            'Change scope silently without informing stakeholders or documenting decisions',
-            'Wait indefinitely without escalating blockers or proposing alternatives',
-          ],
-          correctIndex: 0,
+          options,
+          correctIndex,
           difficulty: diff,
           topic,
           explanation: 'Clear stakeholder alignment, risk documentation, and verified execution ensure reliable delivery.',

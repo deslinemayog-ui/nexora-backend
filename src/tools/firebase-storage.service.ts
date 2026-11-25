@@ -19,7 +19,7 @@ export async function uploadToFirebaseStorage(
         'Content-Type': contentType,
       },
       body: new Uint8Array(buffer),
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(60000),
     });
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
