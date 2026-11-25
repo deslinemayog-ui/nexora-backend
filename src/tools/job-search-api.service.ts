@@ -123,7 +123,7 @@ const NON_HIRING_EMAIL_LOCAL_PATTERN =
   /^(?:noreply|no-reply|donotreply|mailer-daemon|postmaster|support|privacy|legal|dmca|reportfraud|fraud|abuse|security|phishing|whistleblow\w*|ethics|compliance|ombud\w*|complaints?|customercare|customer\.?care|customerservice|customer\.?service|clientcare|client\.?service|helpdesk|claims?|insureinfo|billing|accounts?|payments?|orders?|returns?|refunds?|reservations?|bookings?|press|media|pr|newsroom|communications?|comms|investor\.?relations?|ir|shareholders?|informationofficer|popia|gdpr|dpo|webmaster|hostmaster|ccc|care|feedback|unsubscribe|newsletter|marketing|alerts?|notifications?|mp-dev|contactus|sales|shop|store)$/i;
 
 const NON_HIRING_SUBSTRING_PATTERN =
-  /(?:reportfraud|customercare|customer\.?service|insureinfo|investor\.?relations|informationofficer|whistleblow|no[-_.]?reply|do[-_.]?not[-_.]?reply|renaultcare)/i;
+  /(?:privacy|dataprotection|data[-_.]?protection|gdpr|popia|dpo|compliance|legal|dmca|copyright|reportfraud|fraud|phishing|abuse|infosec|security|whistleblow|ethics|ombud|complaint|customercare|customer[-_.]?care|customer[-_.]?service|client[-_.]?care|client[-_.]?service|helpdesk|support|insureinfo|billing|refund|returns?|investor[-_.]?relations|information[-_.]?officer|accessibility|unsubscribe|opt[-_.]?out|no[-_.]?reply|do[-_.]?not[-_.]?reply|postmaster|webmaster|hostmaster|press|newsroom|media[-_.]?relations|renaultcare)/i;
 
 export function isValidCompanyEmail(email?: string): email is string {
   if (!email) return false;
