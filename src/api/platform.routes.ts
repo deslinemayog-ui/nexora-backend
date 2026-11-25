@@ -18,6 +18,23 @@ export function registerPlatformRoutes(
   const assessmentService = new AssessmentService(deps.openclawService);
   const platformService = new PlatformService(deps.openclawService);
 
+  // Keep in-memory platformStore synchronized with Firebase Firestore across local & live servers
+  app.addHook('preHandler', async (request) => {
+    const url = request.url || '';
+    if (
+      url.startsWith('/api/v1/assignments') ||
+      url.startsWith('/api/v1/transcripts') ||
+      url.startsWith('/api/v1/interviews') ||
+      url.startsWith('/api/v1/live-interview/recordings') ||
+      url.startsWith('/api/v1/organisations') ||
+      url.startsWith('/api/v1/vacancies') ||
+      url.startsWith('/api/v1/notifications') ||
+      url.startsWith('/api/v1/supporting-documents')
+    ) {
+      await platformStore.ensureFresh(8000);
+    }
+  });
+
   // ==================== ASSIGNMENTS & AI ASSESSMENT ENGINE ====================
   app.get('/api/v1/assignments', async (request) => {
     const q = z

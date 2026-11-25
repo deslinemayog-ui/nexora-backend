@@ -486,6 +486,7 @@ class PlatformStore {
   private syncedJsonByKey = new Map<string, string>();
   private syncPromise: Promise<void> | null = null;
   private firebaseHydrated = false;
+  private lastSyncedAt = 0;
 
   private ensureLoaded(): void {
     if (this.loaded) return;
@@ -576,6 +577,7 @@ class PlatformStore {
           }
         }
         this.firebaseHydrated = true;
+        this.lastSyncedAt = Date.now();
         this.writeLocalCache();
       } catch {
         // non-fatal if offline
@@ -584,6 +586,14 @@ class PlatformStore {
       }
     })();
     return this.syncPromise;
+  }
+
+  public async ensureFresh(maxAgeMs = 8000): Promise<void> {
+    if (process.env.NODE_ENV === 'test' || process.env.VITEST) return;
+    this.ensureLoaded();
+    if (!this.firebaseHydrated || Date.now() - this.lastSyncedAt > maxAgeMs) {
+      await this.syncFromFirebase();
+    }
   }
 
   private toFirestoreValue(val: any): Record<string, any> {
