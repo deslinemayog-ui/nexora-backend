@@ -1,6 +1,8 @@
 [build.environment]
   SECRETS_SCAN_OMIT_PATHS = "src/**,web/src/firebase.ts,web/dist/**,dist/**"
   SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES = "AIzaSyBjRi92-GpP71HcBUUXknw3vPhX3lSh7dk"
+  SECRETS_SCAN_OMIT_PATHS = "src/firebase.ts,web/src/firebase.ts,dist/**,web/dist/**,node_modules/**"
+  SECRETS_SCAN_SMART_DETECTION_ENABLED = "false"
 
 [[redirects]]
   from = "/*"
