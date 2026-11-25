@@ -560,7 +560,7 @@ export class AutonomousWorkerService {
       let effectiveRecommendedEmployers: Array<{ name: string; websiteUrl: string }> | undefined;
       if (cvBlockForSearch && process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
         this.emitProgress(params.customerId, {
-          phase: 'OpenClaw analyzing your CV & generating matching job titles...',
+          phase: 'Nexora AI analyzing your CV & generating matching job titles...',
           sentCount: 0,
           totalTarget: params.maxSubmissions ?? 5,
         });
@@ -577,7 +577,7 @@ export class AutonomousWorkerService {
           effectiveIsTechRole = aiProfile.isTechRole;
           effectiveRecommendedEmployers = aiProfile.recommendedEmployers;
           this.emitProgress(params.customerId, {
-            phase: `OpenClaw matched ${aiProfile.matchingTitles.length} job titles & ${aiProfile.recommendedEmployers?.length ?? 0} employers — searching & scraping verified emails...`,
+            phase: `Nexora AI matched ${aiProfile.matchingTitles.length} job titles & ${aiProfile.recommendedEmployers?.length ?? 0} employers — searching & verifying hiring contacts...`,
             sentCount: 0,
             totalTarget: params.maxSubmissions ?? 5,
           });
@@ -1611,7 +1611,7 @@ export class AutonomousWorkerService {
       !process.env.VITEST
     ) {
       this.emitProgress(params.customerId, {
-        phase: `OpenClaw crafting custom pitches for ${targetsToPersonalize.length} target(s)...`,
+        phase: `Nexora AI crafting tailored applications for ${targetsToPersonalize.length} target(s)...`,
         sentCount: 0,
         totalTarget: maxSmtpEmailsPerRun,
       });

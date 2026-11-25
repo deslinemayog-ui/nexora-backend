@@ -122,7 +122,7 @@ export async function buildApiServer(deps: ApiServerDependencies): Promise<Fasti
       info: {
         title: 'Nexora AI – Multi-Tenant WhatsApp AI Workforce API',
         description:
-          'REST API for customer management, persistent projects, tasks, approvals, encrypted documents, OpenClaw execution monitoring, and WhatsApp gateway status.',
+          'REST API for customer management, persistent projects, tasks, approvals, encrypted documents, Nexora AI execution monitoring, and WhatsApp gateway status.',
         version: '1.0.0',
       },
     },
@@ -1063,7 +1063,7 @@ export async function buildApiServer(deps: ApiServerDependencies): Promise<Fasti
     prompt: z.string().min(1),
     systemInstructions: z
       .string()
-      .default('You are an OpenClaw AI agent connected to the Nexora AI Studio.'),
+      .default('You are Nexora AI, an autonomous execution assistant in Nexora AI Studio.'),
     useLocalCli: z.boolean().optional().default(true),
   });
 
