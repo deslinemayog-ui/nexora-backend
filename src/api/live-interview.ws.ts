@@ -90,6 +90,20 @@ export function registerLiveInterviewWebSocket(app: FastifyInstance): void {
     const scheduledInterview = interviewId
       ? platformStore.getState().interviews.find((iv) => iv.id === interviewId)
       : undefined;
+    if (scheduledInterview) {
+      const allowed = 1 + (scheduledInterview.maxRetakes ?? 0);
+      const used = scheduledInterview.attemptsUsed ?? (scheduledInterview.status === 'COMPLETED' ? 1 : 0);
+      if (used >= allowed) {
+        clientWs.send(
+          JSON.stringify({
+            type: 'error',
+            message: 'No retakes remaining for this interview.',
+          }),
+        );
+        clientWs.close(1008, 'No retakes remaining');
+        return;
+      }
+    }
 
     const role = (
       scheduledInterview?.jobTitle ||

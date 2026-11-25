@@ -26,13 +26,15 @@ export interface LinkedScheduledInterview {
   id: string;
   jobTitle: string;
   companyName: string;
-  interviewProvider?: 'GOOGLE_LIVE' | 'NUANCE' | 'EXTERNAL';
+  interviewProvider?: 'GOOGLE_LIVE' | 'NUANCE' | 'TAVUS' | 'EXTERNAL';
   interviewDate?: string;
   interviewTime?: string;
   timezone?: string;
   status?: string;
   instructions?: string;
   recordingUrl?: string;
+  maxRetakes?: number;
+  attemptsUsed?: number;
 }
 
 interface LiveInterviewStudioProps {
@@ -883,17 +885,6 @@ export const LiveInterviewStudio: React.FC<LiveInterviewStudioProps> = ({
                 )}
               </div>
               <div className="flex items-center gap-2">
-                {linkedInterview.recordingUrl && (
-                  <a
-                    href={linkedInterview.recordingUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="chat-action-btn"
-                    style={{ padding: '5px 10px', fontSize: '11.5px', textDecoration: 'none' }}
-                  >
-                    Watch Saved Recording
-                  </a>
-                )}
                 {linkedInterview.status && (
                   <span
                     style={{
@@ -947,26 +938,56 @@ export const LiveInterviewStudio: React.FC<LiveInterviewStudioProps> = ({
                 <span>Camera on</span>
               </label>
             </div>
-            <button
-              type="button"
-              onClick={startLiveInterview}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '8px',
-                padding: '10px 20px',
-                borderRadius: '12px',
-                background: '#005c4b',
-                border: '1px solid rgba(37, 211, 102, 0.45)',
-                color: '#ffffff',
-                fontSize: '13px',
-                fontWeight: 700,
-                cursor: 'pointer',
-              }}
-            >
-              <Radio className="w-4 h-4 text-emerald-300" />
-              <span>{callState === 'ended' ? 'Retake AI Interview' : 'Join AI Interview Now'}</span>
-            </button>
+            {(() => {
+              const totalAllowed = 1 + (linkedInterview?.maxRetakes ?? 0);
+              const used =
+                linkedInterview?.attemptsUsed ?? (linkedInterview?.status === 'COMPLETED' ? 1 : 0);
+              const remaining = Math.max(0, totalAllowed - used);
+              if (remaining <= 0) {
+                return (
+                  <span
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      padding: '9px 16px',
+                      borderRadius: '12px',
+                      background: 'rgba(16, 185, 129, 0.14)',
+                      border: '1px solid rgba(16, 185, 129, 0.35)',
+                      color: '#6ee7b7',
+                      fontSize: '12.5px',
+                      fontWeight: 700,
+                    }}
+                  >
+                    ✓ Interview Completed (No retakes remaining)
+                  </span>
+                );
+              }
+              return (
+                <button
+                  type="button"
+                  onClick={startLiveInterview}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    padding: '10px 20px',
+                    borderRadius: '12px',
+                    background: '#005c4b',
+                    border: '1px solid rgba(37, 211, 102, 0.45)',
+                    color: '#ffffff',
+                    fontSize: '13px',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                  }}
+                >
+                  <Radio className="w-4 h-4 text-emerald-300" />
+                  <span>
+                    {used > 0 ? `Retake AI Interview (${remaining} left)` : 'Join AI Interview Now'}
+                  </span>
+                </button>
+              );
+            })()}
           </div>
 
           {errorMsg && (
@@ -985,8 +1006,8 @@ export const LiveInterviewStudio: React.FC<LiveInterviewStudioProps> = ({
             </div>
           )}
 
-          {/* Post-call Recording Player & Transcript Summary */}
-          {callState === 'ended' && (recordingUrl || transcript.length > 0) && (
+          {/* Post-call Submission Confirmation (recordings go to the employer, not shown to candidate) */}
+          {callState === 'ended' && (uploadStatus !== 'idle' || transcript.length > 0) && (
             <div
               style={{
                 marginTop: '16px',
@@ -996,87 +1017,18 @@ export const LiveInterviewStudio: React.FC<LiveInterviewStudioProps> = ({
                 border: '1px solid #2a3942',
                 display: 'flex',
                 flexDirection: 'column',
-                gap: '12px',
+                gap: '10px',
               }}
             >
-              {recordingUrl && (
-                <div>
-                  <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-xs font-bold text-emerald-300">
-                        Interview Recording ({formatTimer(elapsedSec)})
-                      </span>
-                      {uploadStatus === 'uploading' && (
-                        <span style={{ fontSize: '11px', color: '#7dd3fc', fontWeight: 600 }}>
-                          Saving to Firebase...
-                        </span>
-                      )}
-                      {uploadStatus === 'saved' && (
-                        <span style={{ fontSize: '11px', color: '#34d399', fontWeight: 700 }}>
-                          ✓ Auto-saved to Firebase
-                        </span>
-                      )}
-                      {uploadStatus === 'error' && (
-                        <span style={{ fontSize: '11px', color: '#fca5a5', fontWeight: 600 }}>
-                          Firebase upload error: {uploadError}
-                        </span>
-                      )}
-                    </div>
-                    <a
-                      href={savedCloudUrl || recordingUrl}
-                      download={`nexora-interview-${role.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.webm`}
-                      className="chat-action-btn primary"
-                      style={{ padding: '5px 12px', fontSize: '11.5px', textDecoration: 'none' }}
-                    >
-                      <Download className="w-3.5 h-3.5" />
-                      <span>Download Recording (.webm)</span>
-                    </a>
-                  </div>
-                  {recordingHasVideo ? (
-                    <video
-                      src={recordingUrl}
-                      controls
-                      style={{
-                        width: '100%',
-                        maxHeight: '280px',
-                        borderRadius: '10px',
-                        background: '#000',
-                      }}
-                    />
-                  ) : (
-                    <audio src={recordingUrl} controls style={{ width: '100%' }} />
-                  )}
-                </div>
-              )}
-
-              {transcript.length > 0 && (
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs font-bold text-slate-300">
-                      Interview Transcript ({transcript.length} turns)
-                    </span>
-                    <button
-                      type="button"
-                      onClick={copyTranscript}
-                      className="chat-action-btn"
-                      style={{ padding: '4px 10px', fontSize: '11px' }}
-                    >
-                      {copiedTranscript ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                      <span>{copiedTranscript ? 'Copied' : 'Copy Transcript'}</span>
-                    </button>
-                  </div>
-                  <div style={{ maxHeight: '180px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                    {transcript.map((item) => (
-                      <div key={item.id} style={{ fontSize: '12px', color: '#d1d7db', lineHeight: 1.5 }}>
-                        <strong style={{ color: item.speaker === 'ai' ? '#34d399' : '#7dd3fc' }}>
-                          {item.speaker === 'ai' ? 'Maya: ' : 'You: '}
-                        </strong>
-                        {item.text}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <span className="text-xs font-bold text-emerald-300">
+                  {uploadStatus === 'uploading'
+                    ? `Submitting your interview (${formatTimer(elapsedSec)}) to ${company}...`
+                    : uploadStatus === 'error'
+                      ? `Could not submit recording: ${uploadError}`
+                      : `✓ Interview completed (${formatTimer(elapsedSec)}) and securely sent to ${company} for review.`}
+                </span>
+              </div>
             </div>
           )}
         </div>

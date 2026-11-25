@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { CalendarDays, Video, Phone, MapPin, ArrowLeft, Mail, MessageSquare, ExternalLink, Download } from 'lucide-react';
 import { LiveInterviewStudio } from './LiveInterviewStudio';
+import { NuanceInterviewStudio } from './NuanceInterviewStudio';
+import { TavusInterviewStudio } from './TavusInterviewStudio';
 
 export interface EmailInterviewItem {
   id: string;
@@ -34,7 +36,7 @@ export const InterviewsView: React.FC<InterviewsViewProps> = ({
   onOpenSubmissionChat,
 }) => {
   const [interviews, setInterviews] = useState<any[]>([]);
-  const [savedRecordings, setSavedRecordings] = useState<any[]>([]);
+  const [activeTab, setActiveTab] = useState<'scheduled' | 'completed' | 'detected' | 'cancelled'>('scheduled');
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -43,21 +45,23 @@ export const InterviewsView: React.FC<InterviewsViewProps> = ({
       try {
         const emailParam = candidateEmail ? `&email=${encodeURIComponent(candidateEmail)}` : '';
         const refParam = receiptIds.length > 0 ? `&receiptIds=${encodeURIComponent(receiptIds.join(','))}` : '';
-        const [ivRes, recRes] = await Promise.all([
-          apiFetch(`/api/v1/interviews?userUid=${encodeURIComponent(userUid)}${emailParam}${refParam}`),
-          apiFetch(`/api/v1/live-interview/recordings?userUid=${encodeURIComponent(userUid)}`),
-        ]);
+        const ivRes = await apiFetch(
+          `/api/v1/interviews?userUid=${encodeURIComponent(userUid)}${emailParam}${refParam}`,
+        );
         const ivJson = await ivRes.json().catch(() => null);
         if (ivJson?.ok) setInterviews(ivJson.data || []);
-        const recJson = await recRes.json().catch(() => null);
-        if (recJson?.ok) setSavedRecordings(recJson.data || []);
       } finally {
         setLoading(false);
       }
     })();
   }, [userUid, candidateEmail, receiptIds.join(',')]);
 
-  const totalCount = emailInterviews.length + interviews.length;
+  const activeScheduled = interviews.filter(
+    (iv) => iv.status !== 'CANCELLED' && iv.status !== 'COMPLETED',
+  );
+  const completedInterviews = interviews.filter((iv) => iv.status === 'COMPLETED');
+  const cancelledInterviews = interviews.filter((iv) => iv.status === 'CANCELLED');
+  const totalCount = emailInterviews.length + activeScheduled.length + completedInterviews.length;
 
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: '20px', maxWidth: '960px', margin: '0 auto', width: '100%' }}>
@@ -76,93 +80,282 @@ export const InterviewsView: React.FC<InterviewsViewProps> = ({
         </button>
       </div>
 
-      {/* Email-Detected Interview Invitations */}
-      {emailInterviews.length > 0 && (
+      {/* 2-Tab Navigation: Scheduled Interviews vs Detected from Emails */}
+      <div
+        style={{
+          display: 'flex',
+          gap: '8px',
+          marginBottom: '20px',
+          padding: '4px',
+          borderRadius: '12px',
+          background: 'rgba(17, 27, 33, 0.85)',
+          border: '1px solid rgba(255, 255, 255, 0.08)',
+          width: 'fit-content',
+          flexWrap: 'wrap',
+        }}
+      >
+        <button
+          type="button"
+          onClick={() => setActiveTab('scheduled')}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '8px',
+            padding: '8px 16px',
+            borderRadius: '9px',
+            border: 'none',
+            cursor: 'pointer',
+            fontSize: '12.5px',
+            fontWeight: 700,
+            background: activeTab === 'scheduled' ? '#005c4b' : 'transparent',
+            color: activeTab === 'scheduled' ? '#ffffff' : '#94a3b8',
+          }}
+        >
+          <CalendarDays className="w-3.5 h-3.5" />
+          <span>Scheduled Interviews ({activeScheduled.length})</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('completed')}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '8px',
+            padding: '8px 16px',
+            borderRadius: '9px',
+            border: 'none',
+            cursor: 'pointer',
+            fontSize: '12.5px',
+            fontWeight: 700,
+            background: activeTab === 'completed' ? '#005c4b' : 'transparent',
+            color: activeTab === 'completed' ? '#ffffff' : '#94a3b8',
+          }}
+        >
+          <span>Completed ({completedInterviews.length})</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('detected')}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '8px',
+            padding: '8px 16px',
+            borderRadius: '9px',
+            border: 'none',
+            cursor: 'pointer',
+            fontSize: '12.5px',
+            fontWeight: 700,
+            background: activeTab === 'detected' ? '#005c4b' : 'transparent',
+            color: activeTab === 'detected' ? '#ffffff' : '#94a3b8',
+          }}
+        >
+          <Mail className="w-3.5 h-3.5" />
+          <span>Detected from Emails ({emailInterviews.length})</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('cancelled')}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '8px',
+            padding: '8px 16px',
+            borderRadius: '9px',
+            border: 'none',
+            cursor: 'pointer',
+            fontSize: '12.5px',
+            fontWeight: 700,
+            background: activeTab === 'cancelled' ? '#005c4b' : 'transparent',
+            color: activeTab === 'cancelled' ? '#ffffff' : '#94a3b8',
+          }}
+        >
+          <span>Cancelled ({cancelledInterviews.length})</span>
+        </button>
+      </div>
+
+      {/* TAB 2: Email-Detected Interview Invitations */}
+      {activeTab === 'detected' && (
         <div className="mb-6">
-          <h3 className="text-sm font-bold text-emerald-300 mb-3 flex items-center gap-2">
-            <Mail className="w-4 h-4" />
-            <span>Detected from Email Replies ({emailInterviews.length})</span>
-          </h3>
-          <div className="grid gap-3">
-            {emailInterviews.map((item) => (
-              <div
-                key={item.id}
-                onClick={() => onOpenSubmissionChat?.(item)}
-                style={{
-                  padding: '16px',
-                  borderRadius: '14px',
-                  background: '#18181b',
-                  border: '1px solid rgba(16, 185, 129, 0.35)',
-                  display: 'flex',
-                  flexWrap: 'wrap',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: '12px',
-                  cursor: onOpenSubmissionChat ? 'pointer' : 'default',
-                }}
-              >
-                <div style={{ flex: '1 1 280px', minWidth: 0 }}>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-sm font-bold text-white">{item.companyName}</span>
-                    <span
-                      style={{
-                        fontSize: '10.5px',
-                        fontWeight: 700,
-                        padding: '2px 8px',
-                        borderRadius: '999px',
-                        background: 'rgba(16, 185, 129, 0.2)',
-                        color: '#6ee7b7',
+          {emailInterviews.length === 0 ? (
+            <div className="p-6 rounded-xl bg-[#111b21] border border-[#2a3942] text-center text-xs text-slate-400">
+              No interview invitations detected in your email replies yet.
+            </div>
+          ) : (
+            <div className="grid gap-3">
+              {emailInterviews.map((item) => (
+                <div
+                  key={item.id}
+                  onClick={() => onOpenSubmissionChat?.(item)}
+                  style={{
+                    padding: '16px',
+                    borderRadius: '14px',
+                    background: 'linear-gradient(145deg, #0f172a 0%, #111b21 60%, #0b141a 100%)',
+                    border: '1px solid rgba(16, 185, 129, 0.35)',
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: '12px',
+                    cursor: onOpenSubmissionChat ? 'pointer' : 'default',
+                  }}
+                >
+                  <div style={{ flex: '1 1 280px', minWidth: 0 }}>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm font-bold text-white">{item.companyName}</span>
+                      <span
+                        style={{
+                          fontSize: '10.5px',
+                          fontWeight: 700,
+                          padding: '2px 8px',
+                          borderRadius: '999px',
+                          background: 'rgba(16, 185, 129, 0.2)',
+                          color: '#6ee7b7',
+                        }}
+                      >
+                        Email Invite
+                      </span>
+                    </div>
+                    <div className="text-xs text-slate-300 mt-1">{item.subject}</div>
+                    {item.summary && (
+                      <div className="text-xs text-slate-400 mt-1">{item.summary}</div>
+                    )}
+                    <div className="text-[11px] text-slate-400 mt-1">
+                      From: {item.from} • {new Date(item.receivedAt).toLocaleString()}
+                    </div>
+                  </div>
+                  {onOpenSubmissionChat && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onOpenSubmissionChat(item);
                       }}
+                      className="chat-action-btn primary"
                     >
-                      Email Invite
-                    </span>
-                  </div>
-                  <div className="text-xs text-slate-300 mt-1">{item.subject}</div>
-                  {item.summary && (
-                    <div className="text-xs text-slate-400 mt-1">{item.summary}</div>
+                      <MessageSquare className="w-3.5 h-3.5" />
+                      <span>Open Submission Chat</span>
+                    </button>
                   )}
-                  <div className="text-[11px] text-slate-400 mt-1">
-                    From: {item.from} • {new Date(item.receivedAt).toLocaleString()}
-                  </div>
                 </div>
-                {onOpenSubmissionChat && (
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onOpenSubmissionChat(item);
-                    }}
-                    className="chat-action-btn primary"
-                  >
-                    <MessageSquare className="w-3.5 h-3.5" />
-                    <span>Open Submission Chat</span>
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
-      {/* Company / Agent Scheduled Interviews */}
-      {loading ? (
-        <div className="text-sm text-slate-400">Loading interviews...</div>
-      ) : interviews.length === 0 && emailInterviews.length === 0 ? (
-        <div className="p-6 rounded-xl bg-[#18181b] border border-[#2e2e2e] text-center text-xs text-slate-400">
-          No interviews scheduled yet. Complete your assignments and apply to open opportunities to receive interview invitations.
-        </div>
-      ) : interviews.length > 0 ? (
+      {/* TAB 1, COMPLETED & CANCELLED: Company / Agent Interviews */}
+      {(activeTab === 'scheduled' || activeTab === 'completed' || activeTab === 'cancelled') && (() => {
+        const list =
+          activeTab === 'completed'
+            ? completedInterviews
+            : activeTab === 'cancelled'
+              ? cancelledInterviews
+              : activeScheduled;
+        if (loading) {
+          return <div className="text-sm text-slate-400">Loading interviews...</div>;
+        }
+        if (list.length === 0) {
+          return (
+            <div className="p-6 rounded-xl bg-[#111b21] border border-[#2a3942] text-center text-xs text-slate-400">
+              {activeTab === 'completed'
+                ? 'No completed interviews yet.'
+                : activeTab === 'cancelled'
+                  ? 'No cancelled interviews.'
+                  : 'No interviews scheduled yet. Complete your assignments and apply to open opportunities to receive scheduled interviews.'}
+            </div>
+          );
+        }
+        return (
         <div>
-          {emailInterviews.length > 0 && (
-            <h3 className="text-sm font-bold text-white mb-3">Scheduled Portal Interviews ({interviews.length})</h3>
-          )}
           <div className="grid gap-3">
-            {interviews.map((item) => {
-              // AI Interviews (Google Live / Nuance) render directly as the single Live AI Studio card (no duplicate card!)
-              if (
-                (item.interviewProvider === 'GOOGLE_LIVE' || item.interviewProvider === 'NUANCE') &&
-                item.status !== 'CANCELLED'
-              ) {
+            {list.map((item) => {
+              // Tavus CVI Photorealistic Human AI interviews render directly as the Tavus Video Studio card
+              if (item.interviewProvider === 'TAVUS' && item.status !== 'CANCELLED') {
+                return (
+                  <TavusInterviewStudio
+                    key={item.id}
+                    userUid={userUid}
+                    apiFetch={apiFetch}
+                    candidateName={candidateEmail ? candidateEmail.split('@')[0] : 'Candidate'}
+                    linkedInterview={{
+                      id: item.id,
+                      jobTitle: item.jobTitle,
+                      companyName: item.companyName,
+                      interviewProvider: item.interviewProvider,
+                      interviewDate: item.interviewDate,
+                      interviewTime: item.interviewTime,
+                      timezone: item.timezone,
+                      status: item.status,
+                      instructions: item.instructions,
+                      recordingUrl: item.recordingUrl,
+                      maxRetakes: item.maxRetakes ?? 0,
+                      attemptsUsed: item.attemptsUsed ?? (item.status === 'COMPLETED' ? 1 : 0),
+                    }}
+                    onRecordingSaved={(rec) => {
+                      if (rec) {
+                        setInterviews((prev) =>
+                          prev.map((iv) =>
+                            iv.id === item.id
+                              ? {
+                                  ...iv,
+                                  status: 'COMPLETED',
+                                  attemptsUsed: (iv.attemptsUsed ?? 0) + 1,
+                                  billedMinutes: rec.billedMinutes,
+                                }
+                              : iv,
+                          ),
+                        );
+                      }
+                    }}
+                  />
+                );
+              }
+
+              // Nuance AI Video Persona interviews render directly as the Nuance Video Studio card
+              if (item.interviewProvider === 'NUANCE' && item.status !== 'CANCELLED') {
+                return (
+                  <NuanceInterviewStudio
+                    key={item.id}
+                    userUid={userUid}
+                    apiFetch={apiFetch}
+                    candidateName={candidateEmail ? candidateEmail.split('@')[0] : 'Candidate'}
+                    linkedInterview={{
+                      id: item.id,
+                      jobTitle: item.jobTitle,
+                      companyName: item.companyName,
+                      interviewProvider: item.interviewProvider,
+                      interviewDate: item.interviewDate,
+                      interviewTime: item.interviewTime,
+                      timezone: item.timezone,
+                      status: item.status,
+                      instructions: item.instructions,
+                      recordingUrl: item.recordingUrl,
+                      maxRetakes: item.maxRetakes ?? 0,
+                      attemptsUsed: item.attemptsUsed ?? (item.status === 'COMPLETED' ? 1 : 0),
+                    }}
+                    onRecordingSaved={(rec) => {
+                      if (rec) {
+                        setInterviews((prev) =>
+                          prev.map((iv) =>
+                            iv.id === item.id
+                              ? {
+                                  ...iv,
+                                  status: 'COMPLETED',
+                                  attemptsUsed: (iv.attemptsUsed ?? 0) + 1,
+                                  billedMinutes: rec.billedMinutes,
+                                }
+                              : iv,
+                          ),
+                        );
+                      }
+                    }}
+                  />
+                );
+              }
+
+              // Google Live AI interviews render directly as the Live AI Studio card
+              if (item.interviewProvider === 'GOOGLE_LIVE' && item.status !== 'CANCELLED') {
                 return (
                   <LiveInterviewStudio
                     key={item.id}
@@ -180,14 +373,20 @@ export const InterviewsView: React.FC<InterviewsViewProps> = ({
                       status: item.status,
                       instructions: item.instructions,
                       recordingUrl: item.recordingUrl,
+                      maxRetakes: item.maxRetakes ?? 0,
+                      attemptsUsed: item.attemptsUsed ?? (item.status === 'COMPLETED' ? 1 : 0),
                     }}
                     onRecordingSaved={(rec) => {
                       if (rec) {
-                        setSavedRecordings((prev) => [rec, ...prev.filter((r) => r.id !== rec.id)]);
                         setInterviews((prev) =>
                           prev.map((iv) =>
                             iv.id === item.id
-                              ? { ...iv, status: 'COMPLETED', recordingUrl: rec.recordingUrl, billedMinutes: rec.billedMinutes }
+                              ? {
+                                  ...iv,
+                                  status: 'COMPLETED',
+                                  attemptsUsed: (iv.attemptsUsed ?? 0) + 1,
+                                  billedMinutes: rec.billedMinutes,
+                                }
                               : iv,
                           ),
                         );
@@ -223,9 +422,7 @@ export const InterviewsView: React.FC<InterviewsViewProps> = ({
                   style={{
                     borderRadius: '18px',
                     background: 'linear-gradient(145deg, #0f172a 0%, #111b21 60%, #0b141a 100%)',
-                    border: isCancelled
-                      ? '1px solid rgba(239, 68, 68, 0.32)'
-                      : '1px solid rgba(16, 185, 129, 0.35)',
+                    border: '1px solid rgba(16, 185, 129, 0.35)',
                     overflow: 'hidden',
                     boxShadow: '0 12px 32px rgba(0, 0, 0, 0.35)',
                     opacity: isCancelled ? 0.85 : 1,
@@ -406,18 +603,6 @@ export const InterviewsView: React.FC<InterviewsViewProps> = ({
 
                     <div className="flex items-center justify-between gap-2 flex-wrap">
                       <div className="flex items-center gap-2 flex-wrap">
-                        {item.recordingUrl && (
-                          <a
-                            href={item.recordingUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="chat-action-btn"
-                            style={{ textDecoration: 'none', fontSize: '11.5px', padding: '6px 12px' }}
-                          >
-                            <Video className="w-3.5 h-3.5 text-emerald-400" />
-                            <span>Watch Recording</span>
-                          </a>
-                        )}
                         {(() => {
                           const cleanDate = String(item.interviewDate || '').replace(/-/g, '');
                           const cleanTime = String(item.interviewTime || '10:00').replace(/:/g, '').padEnd(6, '0').slice(0, 6);
@@ -504,66 +689,8 @@ export const InterviewsView: React.FC<InterviewsViewProps> = ({
             })}
           </div>
         </div>
-      ) : null}
-
-      {/* Saved AI Interview Recordings (Firebase Storage) */}
-      {savedRecordings.length > 0 && (
-        <div className="mt-6">
-          <h3 className="text-sm font-bold text-white mb-3 flex items-center gap-2">
-            <Video className="w-4 h-4 text-emerald-400" />
-            <span>Saved AI Interview Recordings ({savedRecordings.length})</span>
-          </h3>
-          <div className="grid gap-3">
-            {savedRecordings.map((rec) => (
-              <div
-                key={rec.id}
-                style={{
-                  padding: '14px 16px',
-                  borderRadius: '14px',
-                  background: '#18181b',
-                  border: '1px solid #2e2e2e',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '10px',
-                }}
-              >
-                <div className="flex items-center justify-between flex-wrap gap-2">
-                  <div>
-                    <div className="text-sm font-bold text-white">
-                      {rec.jobTitle} — {rec.companyName}
-                    </div>
-                    <div className="text-[11px] text-slate-400 mt-0.5">
-                      {rec.interviewProvider === 'NUANCE' ? 'Nuance AI' : 'Google Live AI'} •{' '}
-                      {Math.floor((rec.durationSeconds || 0) / 60)}m {(rec.durationSeconds || 0) % 60}s •{' '}
-                      {new Date(rec.createdAt).toLocaleString()}
-                    </div>
-                  </div>
-                  <a
-                    href={rec.recordingUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    download={`interview-${rec.id}.webm`}
-                    className="chat-action-btn"
-                    style={{ textDecoration: 'none', fontSize: '11.5px', padding: '5px 10px' }}
-                  >
-                    <Download className="w-3.5 h-3.5 text-cyan-400" />
-                    <span>Download</span>
-                  </a>
-                </div>
-                {rec.hasVideo ? (
-                  <video
-                    src={rec.recordingUrl}
-                    controls
-                    style={{ width: '100%', maxHeight: '240px', borderRadius: '10px', background: '#000' }}
-                  />
-                ) : (
-                  <audio src={rec.recordingUrl} controls style={{ width: '100%' }} />
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 };

@@ -820,6 +820,7 @@ export class PlatformService {
       interviewType: 'ONLINE' | 'TELEPHONE' | 'IN_PERSON';
       interviewProvider?: InterviewProviderType;
       aiQuestions?: string;
+      maxRetakes?: number;
       locationOrLink?: string;
       instructions?: string;
     },
@@ -831,7 +832,10 @@ export class PlatformService {
     const now = new Date().toISOString();
     const companyName = org.tradingName || org.registeredName;
     const provider: InterviewProviderType = input.interviewProvider || 'EXTERNAL';
-    if ((provider === 'GOOGLE_LIVE' || provider === 'NUANCE') && !input.aiQuestions?.trim()) {
+    if (
+      (provider === 'GOOGLE_LIVE' || provider === 'NUANCE' || provider === 'TAVUS') &&
+      !input.aiQuestions?.trim()
+    ) {
       throw new Error('Please enter the interview questions for the AI interviewer.');
     }
     const ratePerMinuteUsd = INTERVIEW_PROVIDER_RATES_USD[provider] ?? 0;
@@ -841,7 +845,9 @@ export class PlatformService {
         ? 'Nexora AI Live Room (Google Live • $0.50/min)'
         : provider === 'NUANCE'
           ? 'Nexora AI Video Room (Nuance Persona • $2.00/min)'
-          : 'Provided by organisation');
+          : provider === 'TAVUS'
+            ? 'Nexora Human AI Video Room (Tavus CVI • $2.00/min)'
+            : 'Provided by organisation');
 
     const interview: InterviewRecord = {
       id: `int-${crypto.randomUUID().slice(0, 10)}`,
@@ -861,6 +867,8 @@ export class PlatformService {
       interviewProvider: provider,
       ratePerMinuteUsd,
       aiQuestions: input.aiQuestions?.trim() || undefined,
+      maxRetakes: Math.max(0, Math.min(5, Math.floor(Number(input.maxRetakes ?? 0) || 0))),
+      attemptsUsed: 0,
       locationOrLink: resolvedLocation,
       instructions: input.instructions,
       status: 'SCHEDULED',
@@ -1125,6 +1133,7 @@ export class PlatformService {
       linkedInterview.billedAmountUsd = billedAmountUsd;
       linkedInterview.recordingId = recId;
       linkedInterview.recordingUrl = uploadedUrl;
+      linkedInterview.attemptsUsed = (linkedInterview.attemptsUsed || 0) + 1;
       linkedInterview.status = 'COMPLETED';
       linkedInterview.updatedAt = now;
 
@@ -1133,7 +1142,12 @@ export class PlatformService {
         const org = state.organisations.find((o) => o.id === linkedInterview.organisationId);
         if (org) {
           const billingMonth = now.slice(0, 7);
-          const providerLabel = provider === 'NUANCE' ? 'Nuance AI ($2.00/min)' : 'Google Live AI ($0.50/min)';
+          const providerLabel =
+            provider === 'TAVUS'
+              ? 'Tavus Human AI ($2.00/min)'
+              : provider === 'NUANCE'
+                ? 'Nuance AI ($2.00/min)'
+                : 'Google Live AI ($0.50/min)';
           const existingInv = state.invoices.find(
             (inv) => inv.organisationId === org.id && inv.interviewId === linkedInterview.id,
           );
@@ -2347,6 +2361,7 @@ export class PlatformService {
       interviewType?: InterviewRecord['interviewType'];
       interviewProvider?: InterviewProviderType;
       aiQuestions?: string;
+      maxRetakes?: number;
       locationOrLink?: string;
       instructions?: string;
     },
@@ -2369,7 +2384,10 @@ export class PlatformService {
 
     const now = new Date().toISOString();
     const provider: InterviewProviderType = input.interviewProvider || 'EXTERNAL';
-    if ((provider === 'GOOGLE_LIVE' || provider === 'NUANCE') && !input.aiQuestions?.trim()) {
+    if (
+      (provider === 'GOOGLE_LIVE' || provider === 'NUANCE' || provider === 'TAVUS') &&
+      !input.aiQuestions?.trim()
+    ) {
       throw new Error('Please enter the interview questions for the AI interviewer.');
     }
     const ratePerMinuteUsd = INTERVIEW_PROVIDER_RATES_USD[provider] ?? 0;
@@ -2379,7 +2397,9 @@ export class PlatformService {
         ? 'Nexora AI Live Room (Google Live • $0.50/min)'
         : provider === 'NUANCE'
           ? 'Nexora AI Video Room (Nuance Persona • $2.00/min)'
-          : 'Provided by organisation');
+          : provider === 'TAVUS'
+            ? 'Nexora Human AI Video Room (Tavus CVI • $2.00/min)'
+            : 'Provided by organisation');
 
     const interview: InterviewRecord = {
       id: `int-${crypto.randomUUID().slice(0, 10)}`,
@@ -2398,6 +2418,8 @@ export class PlatformService {
       interviewProvider: provider,
       ratePerMinuteUsd,
       aiQuestions: input.aiQuestions?.trim() || undefined,
+      maxRetakes: Math.max(0, Math.min(5, Math.floor(Number(input.maxRetakes ?? 0) || 0))),
+      attemptsUsed: 0,
       locationOrLink: resolvedLocation,
       instructions: input.instructions,
       status: 'INVITED',

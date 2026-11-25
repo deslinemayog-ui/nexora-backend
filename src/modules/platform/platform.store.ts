@@ -242,11 +242,12 @@ export interface VacancyApplicationRecord {
   updatedAt: string;
 }
 
-export type InterviewProviderType = 'GOOGLE_LIVE' | 'NUANCE' | 'EXTERNAL';
+export type InterviewProviderType = 'GOOGLE_LIVE' | 'NUANCE' | 'TAVUS' | 'EXTERNAL';
 
 export const INTERVIEW_PROVIDER_RATES_USD: Record<InterviewProviderType, number> = {
   GOOGLE_LIVE: 0.5,
   NUANCE: 2.0,
+  TAVUS: 2.0,
   EXTERNAL: 0,
 };
 
@@ -290,6 +291,8 @@ export interface InterviewRecord {
   interviewProvider?: InterviewProviderType;
   ratePerMinuteUsd?: number;
   aiQuestions?: string;
+  maxRetakes?: number;
+  attemptsUsed?: number;
   locationOrLink: string;
   instructions?: string;
   status: 'INVITED' | 'SCHEDULED' | 'RESCHEDULED' | 'COMPLETED' | 'CANCELLED';

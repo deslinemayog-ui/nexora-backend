@@ -502,8 +502,9 @@ export function registerPlatformRoutes(
         interviewTime: z.string().min(2),
         timezone: z.string().optional(),
         interviewType: z.enum(['ONLINE', 'TELEPHONE', 'IN_PERSON']).optional(),
-        interviewProvider: z.enum(['GOOGLE_LIVE', 'NUANCE', 'EXTERNAL']).optional(),
+        interviewProvider: z.enum(['GOOGLE_LIVE', 'NUANCE', 'TAVUS', 'EXTERNAL']).optional(),
         aiQuestions: z.string().optional(),
+        maxRetakes: z.number().int().min(0).max(5).optional(),
         locationOrLink: z.string().optional(),
         instructions: z.string().optional(),
       })
@@ -532,6 +533,238 @@ export function registerPlatformRoutes(
     }
   });
 
+  // ==================== NUANCE LABS AI VIDEO PERSONA SESSION TOKEN ====================
+  app.post('/api/v1/nuance/session-token', async (request, reply) => {
+    const nuanceKey = (process.env.NUANCE_API_KEY || '').trim();
+    if (!nuanceKey) {
+      return reply.status(503).send({ ok: false, error: 'NUANCE_API_KEY is not configured on the server.' });
+    }
+    const body = z
+      .object({
+        userUid: z.string().min(1),
+        interviewId: z.string().optional(),
+        personaId: z.enum(['sam', 'sonia', 'mira']).default('sonia'),
+        role: z.string().optional(),
+        companyName: z.string().optional(),
+        candidateName: z.string().optional(),
+      })
+      .parse(request.body || {});
+
+    await platformStore.ensureFresh(8000);
+    const scheduled = body.interviewId
+      ? platformStore.getState().interviews.find((iv) => iv.id === body.interviewId)
+      : undefined;
+    if (scheduled) {
+      const allowed = 1 + (scheduled.maxRetakes ?? 0);
+      const used = scheduled.attemptsUsed ?? (scheduled.status === 'COMPLETED' ? 1 : 0);
+      if (used >= allowed) {
+        return reply.status(403).send({
+          ok: false,
+          error: 'No retakes remaining for this interview.',
+        });
+      }
+    }
+
+    const personaName =
+      body.personaId === 'sam' ? 'Sam' : body.personaId === 'mira' ? 'Mira' : 'Sonia';
+    const role = scheduled?.jobTitle || body.role || 'Senior Professional';
+    const company = scheduled?.companyName || body.companyName || 'Nexora AI Partner';
+    const candidateName = scheduled?.candidateName || body.candidateName || 'Candidate';
+    const employerQuestions = scheduled?.aiQuestions || scheduled?.interviewerNotes || '';
+    const instructions = scheduled?.instructions || '';
+
+    const promptLines = [
+      `You are ${personaName}, a warm, sharp, human-like senior interviewer representing ${company} on Nexora AI.`,
+      `You are conducting a live face-to-face video interview with ${candidateName} for the role of "${role}".`,
+    ];
+    if (employerQuestions.trim()) {
+      promptLines.push(
+        ``,
+        `Employer interview questions you must cover in order, one at a time, with brief natural follow-ups based on what ${candidateName} says:`,
+        employerQuestions.trim(),
+      );
+    }
+    if (instructions.trim()) {
+      promptLines.push(``, `Additional employer context:`, instructions.trim());
+    }
+    promptLines.push(
+      ``,
+      `Speak in plain, natural conversational sentences (2-4 sentences per turn). Never read bullet symbols or numbering out loud. Greet ${candidateName} warmly by name and ask the first question. Ask one question at a time, listen attentively, and once all questions are covered, thank ${candidateName}, let them know their video recording has been saved for ${company}, and invite them to click End Call.`,
+    );
+
+    const safeEndUserId = body.userUid.replace(/[^a-zA-Z0-9_.:-]/g, '_').slice(0, 64) || 'nexora_user';
+    const apiBase = (process.env.NUANCE_API_URL || 'https://api.nuancelabs.ai').replace(/\/+$/, '');
+
+    try {
+      const res = await fetch(`${apiBase}/session-tokens`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${nuanceKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          personality: {
+            persona_id: body.personaId,
+            system_prompt: promptLines.join('\n').slice(0, 3800),
+          },
+          end_user_id: safeEndUserId,
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        return reply
+          .status(res.status)
+          .send({ ok: false, error: `Nuance API error (${res.status}): ${errText.slice(0, 300)}` });
+      }
+      const data = (await res.json()) as { token: string; expires_at?: string };
+      return { ok: true, token: data.token, expiresAt: data.expires_at };
+    } catch (err: any) {
+      return reply
+        .status(502)
+        .send({ ok: false, error: err?.message || 'Failed to mint Nuance session token.' });
+    }
+  });
+
+  // ==================== TAVUS CVI PHOTOREALISTIC HUMAN VIDEO INTERVIEW ====================
+  app.post('/api/v1/tavus/conversations', async (request, reply) => {
+    const tavusKey = (process.env.TAVUS_API_KEY || '').trim();
+    if (!tavusKey) {
+      return reply.status(503).send({ ok: false, error: 'TAVUS_API_KEY is not configured on the server.' });
+    }
+    const body = z
+      .object({
+        userUid: z.string().min(1),
+        interviewId: z.string().optional(),
+        replicaId: z.string().default('r8fbdfb197a8'), // Audrey (Verified Real Human Phoenix-4.5)
+        replicaName: z.string().default('Audrey'),
+        role: z.string().optional(),
+        companyName: z.string().optional(),
+        candidateName: z.string().optional(),
+      })
+      .parse(request.body || {});
+
+    await platformStore.ensureFresh(8000);
+    const scheduled = body.interviewId
+      ? platformStore.getState().interviews.find((iv) => iv.id === body.interviewId)
+      : undefined;
+    if (scheduled) {
+      const allowed = 1 + (scheduled.maxRetakes ?? 0);
+      const used = scheduled.attemptsUsed ?? (scheduled.status === 'COMPLETED' ? 1 : 0);
+      if (used >= allowed) {
+        return reply.status(403).send({
+          ok: false,
+          error: 'No retakes remaining for this interview.',
+        });
+      }
+    }
+
+    const role = scheduled?.jobTitle || body.role || 'Senior Professional';
+    const company = scheduled?.companyName || body.companyName || 'Nexora AI Partner';
+    const candidateName = scheduled?.candidateName || body.candidateName || 'Candidate';
+    const employerQuestions = scheduled?.aiQuestions || scheduled?.interviewerNotes || '';
+    const instructions = scheduled?.instructions || '';
+
+    const systemPrompt = [
+      `You are ${body.replicaName}, a warm, sharp, photorealistic senior interviewer representing ${company} on Nexora AI.`,
+      `You are conducting a live face-to-face video interview with ${candidateName} for the role of "${role}".`,
+      employerQuestions.trim()
+        ? `\nMANDATORY EMPLOYER INTERVIEW QUESTIONS (ask these in order, one at a time, with brief natural follow-ups based on what ${candidateName} says):\n${employerQuestions.trim()}`
+        : '',
+      instructions.trim() ? `\nAdditional employer context:\n${instructions.trim()}` : '',
+      `\nSpeak naturally like a real human interviewer (2-4 concise sentences per turn). Never read bullet symbols or numbering aloud. Listen carefully, react naturally, and once all questions are covered, thank ${candidateName} warmly and invite them to click End Call.`,
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    try {
+      // 1. Create a tailored Tavus persona for this interview's exact employer questions
+      const personaRes = await fetch('https://tavusapi.com/v2/personas', {
+        method: 'POST',
+        headers: {
+          'x-api-key': tavusKey,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          persona_name: `Nexora Interviewer - ${role}`.slice(0, 80),
+          pipeline_mode: 'full',
+          system_prompt: systemPrompt.slice(0, 6000),
+          context: `Candidate: ${candidateName}. Role: ${role}. Company: ${company}.`,
+          default_replica_id: body.replicaId,
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+
+      let personaId: string | undefined;
+      if (personaRes.ok) {
+        const pJson = (await personaRes.json()) as { persona_id?: string };
+        personaId = pJson.persona_id;
+      }
+
+      // 2. Create the live Tavus CVI conversation room
+      const convPayload: Record<string, any> = {
+        replica_id: body.replicaId,
+        conversation_name: `Nexora Interview: ${role} — ${candidateName}`.slice(0, 100),
+        conversational_context: systemPrompt.slice(0, 4000),
+        custom_greeting: `Hi ${candidateName}! Welcome to your ${role} interview with ${company}. I'm ${body.replicaName}, and it's great to meet you. Whenever you're ready, let's dive into our first question.`,
+      };
+      if (personaId) {
+        convPayload.persona_id = personaId;
+      }
+
+      const convRes = await fetch('https://tavusapi.com/v2/conversations', {
+        method: 'POST',
+        headers: {
+          'x-api-key': tavusKey,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(convPayload),
+        signal: AbortSignal.timeout(15000),
+      });
+
+      if (!convRes.ok) {
+        const errText = await convRes.text().catch(() => '');
+        return reply
+          .status(convRes.status)
+          .send({ ok: false, error: `Tavus API error (${convRes.status}): ${errText.slice(0, 300)}` });
+      }
+      const convJson = (await convRes.json()) as {
+        conversation_id: string;
+        conversation_url: string;
+        status?: string;
+      };
+      return {
+        ok: true,
+        conversationId: convJson.conversation_id,
+        conversationUrl: convJson.conversation_url,
+        status: convJson.status || 'active',
+      };
+    } catch (err: any) {
+      return reply
+        .status(502)
+        .send({ ok: false, error: err?.message || 'Failed to create Tavus conversation.' });
+    }
+  });
+
+  app.post('/api/v1/tavus/conversations/:conversationId/end', async (request, reply) => {
+    const tavusKey = (process.env.TAVUS_API_KEY || '').trim();
+    const params = z.object({ conversationId: z.string().min(1) }).parse(request.params);
+    if (!tavusKey) {
+      return reply.status(503).send({ ok: false, error: 'TAVUS_API_KEY not configured' });
+    }
+    try {
+      await fetch(`https://tavusapi.com/v2/conversations/${encodeURIComponent(params.conversationId)}/end`, {
+        method: 'POST',
+        headers: { 'x-api-key': tavusKey },
+        signal: AbortSignal.timeout(10000),
+      }).catch(() => undefined);
+      return { ok: true };
+    } catch {
+      return { ok: true };
+    }
+  });
+
   // ==================== LIVE AI INTERVIEW RECORDINGS (FIREBASE) ====================
   app.get('/api/v1/live-interview/recordings', async (request) => {
     const q = z.object({ userUid: z.string().min(1) }).parse(request.query);
@@ -552,7 +785,7 @@ export function registerPlatformRoutes(
           role: z.string().default('Live AI Interview'),
           companyName: z.string().default('Nexora AI Practice'),
           interviewType: z.string().default('Technical & Behavioral'),
-          interviewProvider: z.enum(['GOOGLE_LIVE', 'NUANCE', 'EXTERNAL']).optional(),
+          interviewProvider: z.enum(['GOOGLE_LIVE', 'NUANCE', 'TAVUS', 'EXTERNAL']).optional(),
           durationSeconds: z.number().min(0).default(1),
           hasVideo: z.boolean().default(false),
           mimeType: z.string().default('video/webm'),
@@ -615,8 +848,9 @@ export function registerPlatformRoutes(
         interviewTime: z.string().min(2),
         timezone: z.string().default('UTC'),
         interviewType: z.enum(['ONLINE', 'TELEPHONE', 'IN_PERSON']).default('ONLINE'),
-        interviewProvider: z.enum(['GOOGLE_LIVE', 'NUANCE', 'EXTERNAL']).optional(),
+        interviewProvider: z.enum(['GOOGLE_LIVE', 'NUANCE', 'TAVUS', 'EXTERNAL']).optional(),
         aiQuestions: z.string().optional(),
+        maxRetakes: z.number().int().min(0).max(5).optional(),
         locationOrLink: z.string().optional(),
         instructions: z.string().optional(),
       })

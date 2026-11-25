@@ -9,6 +9,8 @@
     "preview": "vite preview --port 5173"
   },
   "dependencies": {
+    "@daily-co/daily-js": "^0.95.0",
+    "@nuancelabs/js-sdk": "^0.40.0",
     "firebase": "^13.3.0",
     "lucide-react": "^1.73.0",
     "pdfjs-dist": "^6.5.438",

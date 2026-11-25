@@ -152,8 +152,9 @@ export const CompanyPortal: React.FC<CompanyPortalProps> = ({ pathname, onNaviga
   const [interviewModalApp, setInterviewModalApp] = useState<any>(null);
   const [interviewForm, setInterviewForm] = useState({
     interviewType: 'ONLINE',
-    interviewProvider: 'GOOGLE_LIVE' as 'GOOGLE_LIVE' | 'NUANCE' | 'EXTERNAL',
+    interviewProvider: 'GOOGLE_LIVE' as 'GOOGLE_LIVE' | 'NUANCE' | 'TAVUS' | 'EXTERNAL',
     aiQuestions: '',
+    maxRetakes: 0,
     interviewDate: new Date(Date.now() + 86400000).toISOString().slice(0, 10),
     interviewTime: '10:00',
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Africa/Johannesburg',
@@ -203,8 +204,9 @@ export const CompanyPortal: React.FC<CompanyPortalProps> = ({ pathname, onNaviga
     interviewDate: new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10),
     interviewTime: '10:00',
     interviewType: 'ONLINE' as 'ONLINE' | 'TELEPHONE' | 'IN_PERSON',
-    interviewProvider: 'GOOGLE_LIVE' as 'GOOGLE_LIVE' | 'NUANCE' | 'EXTERNAL',
+    interviewProvider: 'GOOGLE_LIVE' as 'GOOGLE_LIVE' | 'NUANCE' | 'TAVUS' | 'EXTERNAL',
     aiQuestions: '',
+    maxRetakes: 0,
     locationOrLink: '',
     instructions: 'We found your Nexora AI profile a strong match. Accept this invite to auto-apply and confirm your slot.',
   });
@@ -525,6 +527,10 @@ export const CompanyPortal: React.FC<CompanyPortalProps> = ({ pathname, onNaviga
           interviewForm.interviewType === 'ONLINE' && interviewForm.interviewProvider !== 'EXTERNAL'
             ? interviewForm.aiQuestions.trim()
             : undefined,
+        maxRetakes:
+          interviewForm.interviewType === 'ONLINE' && interviewForm.interviewProvider !== 'EXTERNAL'
+            ? Number(interviewForm.maxRetakes || 0)
+            : 0,
         locationOrLink:
           interviewForm.interviewType === 'ONLINE' && interviewForm.interviewProvider !== 'EXTERNAL'
             ? undefined
@@ -2053,42 +2059,6 @@ export const CompanyPortal: React.FC<CompanyPortalProps> = ({ pathname, onNaviga
                           ))}
                         </div>
                       )}
-                      <div className="flex gap-3 mt-2 text-xs flex-wrap">
-                        {app.cvDownloadUrl && (
-                          <a href={resolveApiUrl(app.cvDownloadUrl)} target="_blank" rel="noreferrer" className="text-indigo-400 underline">
-                            CV ({app.cvFileName || 'Download'})
-                          </a>
-                        )}
-                        {app.transcriptPdfUrl && (
-                          <a href={resolveApiUrl(app.transcriptPdfUrl)} target="_blank" rel="noreferrer" className="text-emerald-400 underline">
-                            Transcript PDF
-                          </a>
-                        )}
-                        {(app.supportingDocuments || []).map((doc: any) => (
-                          <a
-                            key={doc.id}
-                            href={resolveApiUrl(doc.downloadUrl)}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="text-sky-300 underline"
-                          >
-                            {doc.docType}: {doc.label || doc.fileName}
-                          </a>
-                        ))}
-                        {(app.transcripts || []).map((tr: any) =>
-                          tr.pdfDownloadUrl ? (
-                            <a
-                              key={tr.id}
-                              href={resolveApiUrl(tr.pdfDownloadUrl)}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="text-cyan-300 underline"
-                            >
-                              Transcript ({tr.assignmentTitle} • {tr.percentageScore}%)
-                            </a>
-                          ) : null,
-                        )}
-                      </div>
                     </div>
                     <div className="flex items-center gap-2 flex-wrap">
                       <select
@@ -2149,6 +2119,131 @@ export const CompanyPortal: React.FC<CompanyPortalProps> = ({ pathname, onNaviga
                         Message
                       </button>
                     </div>
+                    {(app.cvDownloadUrl ||
+                      app.transcriptPdfUrl ||
+                      (app.supportingDocuments && app.supportingDocuments.length > 0) ||
+                      (app.transcripts && app.transcripts.length > 0)) && (
+                      <div
+                        style={{
+                          flexBasis: '100%',
+                          width: '100%',
+                          display: 'flex',
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          flexWrap: 'wrap',
+                          gap: '10px',
+                          paddingTop: '10px',
+                          marginTop: '4px',
+                          borderTop: '1px solid rgba(255, 255, 255, 0.06)',
+                        }}
+                      >
+                        {app.cvDownloadUrl && (
+                          <a
+                            href={resolveApiUrl(app.cvDownloadUrl)}
+                            target="_blank"
+                            rel="noreferrer"
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '7px',
+                              padding: '6px 12px',
+                              borderRadius: '10px',
+                              background: 'rgba(99, 102, 241, 0.14)',
+                              border: '1px solid rgba(129, 140, 248, 0.38)',
+                              color: '#e0e7ff',
+                              fontSize: '12px',
+                              fontWeight: 600,
+                              textDecoration: 'none',
+                            }}
+                            title={app.cvFileName || 'Download CV'}
+                          >
+                            <FileText className="w-3.5 h-3.5 text-indigo-400" style={{ flexShrink: 0 }} />
+                            <span>CV — {app.cvFileName || 'Resume.pdf'}</span>
+                            <ExternalLink className="w-3 h-3 text-indigo-300" style={{ flexShrink: 0, opacity: 0.8 }} />
+                          </a>
+                        )}
+                        {app.transcriptPdfUrl && (
+                          <a
+                            href={resolveApiUrl(app.transcriptPdfUrl)}
+                            target="_blank"
+                            rel="noreferrer"
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '7px',
+                              padding: '6px 12px',
+                              borderRadius: '10px',
+                              background: 'rgba(16, 185, 129, 0.14)',
+                              border: '1px solid rgba(52, 211, 153, 0.4)',
+                              color: '#d1fae5',
+                              fontSize: '12px',
+                              fontWeight: 600,
+                              textDecoration: 'none',
+                            }}
+                          >
+                            <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" style={{ flexShrink: 0 }} />
+                            <span>Verified Transcript PDF</span>
+                            <ExternalLink className="w-3 h-3 text-emerald-300" style={{ flexShrink: 0, opacity: 0.8 }} />
+                          </a>
+                        )}
+                        {(app.supportingDocuments || []).map((doc: any) => (
+                          <a
+                            key={doc.id}
+                            href={resolveApiUrl(doc.downloadUrl)}
+                            target="_blank"
+                            rel="noreferrer"
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '7px',
+                              padding: '6px 12px',
+                              borderRadius: '10px',
+                              background: 'rgba(14, 165, 233, 0.14)',
+                              border: '1px solid rgba(56, 189, 248, 0.35)',
+                              color: '#e0f2fe',
+                              fontSize: '12px',
+                              fontWeight: 600,
+                              textDecoration: 'none',
+                            }}
+                          >
+                            <FileText className="w-3.5 h-3.5 text-sky-400" style={{ flexShrink: 0 }} />
+                            <span>
+                              {doc.docType}: {doc.label || doc.fileName}
+                            </span>
+                            <ExternalLink className="w-3 h-3 text-sky-300" style={{ flexShrink: 0, opacity: 0.8 }} />
+                          </a>
+                        ))}
+                        {(app.transcripts || []).map((tr: any) =>
+                          tr.pdfDownloadUrl && tr.pdfDownloadUrl !== app.transcriptPdfUrl ? (
+                            <a
+                              key={tr.id}
+                              href={resolveApiUrl(tr.pdfDownloadUrl)}
+                              target="_blank"
+                              rel="noreferrer"
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '7px',
+                                padding: '6px 12px',
+                                borderRadius: '10px',
+                                background: 'rgba(6, 182, 212, 0.14)',
+                                border: '1px solid rgba(34, 211, 238, 0.35)',
+                                color: '#cffafe',
+                                fontSize: '12px',
+                                fontWeight: 600,
+                                textDecoration: 'none',
+                              }}
+                            >
+                              <ShieldCheck className="w-3.5 h-3.5 text-cyan-400" style={{ flexShrink: 0 }} />
+                              <span>
+                                {tr.assignmentTitle} ({tr.percentageScore}%)
+                              </span>
+                              <ExternalLink className="w-3 h-3 text-cyan-300" style={{ flexShrink: 0, opacity: 0.8 }} />
+                            </a>
+                          ) : null,
+                        )}
+                      </div>
+                    )}
                   </div>
                 ))}
                 {filteredApps.length === 0 && (
@@ -2482,13 +2577,14 @@ export const CompanyPortal: React.FC<CompanyPortalProps> = ({ pathname, onNaviga
                                 onChange={(e) =>
                                   setInviteForm({
                                     ...inviteForm,
-                                    interviewProvider: e.target.value as 'GOOGLE_LIVE' | 'NUANCE' | 'EXTERNAL',
+                                    interviewProvider: e.target.value as 'GOOGLE_LIVE' | 'NUANCE' | 'TAVUS' | 'EXTERNAL',
                                   })
                                 }
                                 className="auth-input"
                                 style={{ fontSize: '12px' }}
                               >
                                 <option value="GOOGLE_LIVE">Google Live AI — $0.50/min (Monthly Invoice)</option>
+                                <option value="TAVUS">Tavus Photorealistic Human AI — $2.00/min (Monthly Invoice)</option>
                                 <option value="NUANCE">Nuance AI Video Persona — $2.00/min (Monthly Invoice)</option>
                                 <option value="EXTERNAL">Own / External Meeting Link — Free</option>
                               </select>
@@ -2554,24 +2650,30 @@ export const CompanyPortal: React.FC<CompanyPortalProps> = ({ pathname, onNaviga
                           className="text-[11px] px-2.5 py-0.5 rounded-full font-bold"
                           style={{
                             background:
-                              iv.interviewProvider === 'NUANCE'
-                                ? 'rgba(168,85,247,0.22)'
-                                : iv.interviewProvider === 'GOOGLE_LIVE'
-                                  ? 'rgba(16,185,129,0.22)'
-                                  : 'rgba(100,116,139,0.22)',
+                              iv.interviewProvider === 'TAVUS'
+                                ? 'rgba(14,165,233,0.22)'
+                                : iv.interviewProvider === 'NUANCE'
+                                  ? 'rgba(168,85,247,0.22)'
+                                  : iv.interviewProvider === 'GOOGLE_LIVE'
+                                    ? 'rgba(16,185,129,0.22)'
+                                    : 'rgba(100,116,139,0.22)',
                             color:
-                              iv.interviewProvider === 'NUANCE'
-                                ? '#d8b4fe'
-                                : iv.interviewProvider === 'GOOGLE_LIVE'
-                                  ? '#6ee7b7'
-                                  : '#cbd5e1',
+                              iv.interviewProvider === 'TAVUS'
+                                ? '#7dd3fc'
+                                : iv.interviewProvider === 'NUANCE'
+                                  ? '#d8b4fe'
+                                  : iv.interviewProvider === 'GOOGLE_LIVE'
+                                    ? '#6ee7b7'
+                                    : '#cbd5e1',
                           }}
                         >
-                          {iv.interviewProvider === 'NUANCE'
-                            ? 'Nuance AI • $2.00/min'
-                            : iv.interviewProvider === 'GOOGLE_LIVE'
-                              ? 'Google Live • $0.50/min'
-                              : 'External • Free'}
+                          {iv.interviewProvider === 'TAVUS'
+                            ? 'Tavus Human AI • $2.00/min'
+                            : iv.interviewProvider === 'NUANCE'
+                              ? 'Nuance AI • $2.00/min'
+                              : iv.interviewProvider === 'GOOGLE_LIVE'
+                                ? 'Google Live • $0.50/min'
+                                : 'External • Free'}
                         </span>
                         <span
                           className="text-[11px] px-2.5 py-0.5 rounded-full font-bold"
@@ -3734,10 +3836,16 @@ export const CompanyPortal: React.FC<CompanyPortalProps> = ({ pathname, onNaviga
                       desc: 'Real-time voice & webcam AI interviewer + auto-saved Firebase recording & transcript.',
                     },
                     {
+                      id: 'TAVUS',
+                      title: 'Tavus Photorealistic Human AI',
+                      price: '$2.00 / min',
+                      desc: 'Lifelike real human video interviewer (Audrey, Shane, Emily, Lucy, Joyce) + auto-saved Firebase recording.',
+                    },
+                    {
                       id: 'NUANCE',
                       title: 'Nuance AI Video Persona',
                       price: '$2.00 / min',
-                      desc: 'Photorealistic full-duplex AI video interviewer + auto-saved Firebase recording.',
+                      desc: 'Full-duplex animated AI video persona (Sonia, Mira, Sam) + auto-saved Firebase recording.',
                     },
                     {
                       id: 'EXTERNAL',
@@ -3847,7 +3955,11 @@ export const CompanyPortal: React.FC<CompanyPortalProps> = ({ pathname, onNaviga
               <div className="grid gap-2">
                 <label className="text-xs font-bold text-emerald-300">
                   AI Interview Questions (Required — fed directly to{' '}
-                  {interviewForm.interviewProvider === 'NUANCE' ? 'Nuance AI' : 'Google Live AI'}) *
+                  {interviewForm.interviewProvider === 'TAVUS'
+                    ? 'Tavus Human AI'
+                    : interviewForm.interviewProvider === 'NUANCE'
+                      ? 'Nuance AI'
+                      : 'Google Live AI'}) *
                 </label>
                 <textarea
                   required
@@ -3859,6 +3971,24 @@ export const CompanyPortal: React.FC<CompanyPortalProps> = ({ pathname, onNaviga
                   onChange={(e) => setInterviewForm({ ...interviewForm, aiQuestions: e.target.value })}
                   className="auth-input"
                 />
+                <div className="flex items-center justify-between gap-2">
+                  <label className="text-xs font-semibold text-slate-300">
+                    Allowed Candidate Retakes:
+                  </label>
+                  <select
+                    value={interviewForm.maxRetakes}
+                    onChange={(e) =>
+                      setInterviewForm({ ...interviewForm, maxRetakes: Number(e.target.value) || 0 })
+                    }
+                    className="auth-input"
+                    style={{ width: 'auto', minWidth: '170px', fontSize: '12px' }}
+                  >
+                    <option value={0}>0 — No retakes (Default)</option>
+                    <option value={1}>1 retake allowed</option>
+                    <option value={2}>2 retakes allowed</option>
+                    <option value={3}>3 retakes allowed</option>
+                  </select>
+                </div>
                 <div
                   style={{
                     padding: '9px 12px',
@@ -3870,7 +4000,9 @@ export const CompanyPortal: React.FC<CompanyPortalProps> = ({ pathname, onNaviga
                   }}
                 >
                   Nexora AI room is provisioned automatically. Recording saves to Firebase when the candidate ends the call, and usage (
-                  {interviewForm.interviewProvider === 'NUANCE' ? '$2.00/min' : '$0.50/min'}) is added to your monthly invoice.
+                  {interviewForm.interviewProvider === 'TAVUS' || interviewForm.interviewProvider === 'NUANCE'
+                    ? '$2.00/min'
+                    : '$0.50/min'}) is added to your monthly invoice.
                 </div>
               </div>
             )}

@@ -62,6 +62,43 @@ export class AssessmentService {
     const state = platformStore.getState();
     let userAssignments = state.assignments.filter((a) => a.userUid === params.userUid);
 
+    // Enforce strictly 1 assignment per category (agent type) — deduplicate & clean any legacy duplicates
+    if (userAssignments.length > 0) {
+      const statusRank: Record<string, number> = {
+        PASSED: 5,
+        FAILED: 4,
+        IN_PROGRESS: 3,
+        READY_TO_START: 2,
+        PREREQUISITES_REQUIRED: 1,
+        NOT_STARTED: 0,
+      };
+      const bestByCategory = new Map<string, AssignmentRecord>();
+      for (const asg of userAssignments) {
+        const cur = bestByCategory.get(asg.category);
+        if (!cur) {
+          bestByCategory.set(asg.category, asg);
+          continue;
+        }
+        const newRank = statusRank[asg.status] ?? 0;
+        const curRank = statusRank[cur.status] ?? 0;
+        if (
+          newRank > curRank ||
+          (newRank === curRank &&
+            String(asg.updatedAt || asg.createdAt || '') > String(cur.updatedAt || cur.createdAt || ''))
+        ) {
+          bestByCategory.set(asg.category, asg);
+        }
+      }
+      const keepIds = new Set(Array.from(bestByCategory.values()).map((a) => a.id));
+      if (keepIds.size < userAssignments.length) {
+        state.assignments = state.assignments.filter(
+          (a) => a.userUid !== params.userUid || keepIds.has(a.id),
+        );
+        platformStore.save();
+        userAssignments = Array.from(bestByCategory.values());
+      }
+    }
+
     if (userAssignments.length === 0) {
       const now = new Date().toISOString();
       const starters: AssignmentRecord[] = [
@@ -474,6 +511,10 @@ export class AssessmentService {
       createdAt: submittedAt,
     };
 
+    // 1 transcript per user per assignment category (agent type): retaking nullifies & removes any previous transcript
+    state.transcripts = state.transcripts.filter(
+      (t) => !(t.userUid === params.userUid && t.category === asg.category),
+    );
     state.transcripts.unshift(transcript);
     state.notifications.unshift({
       id: `ntf-${crypto.randomUUID().slice(0, 8)}`,
@@ -492,7 +533,19 @@ export class AssessmentService {
   }
 
   public listTranscriptsForUser(userUid: string): AssessmentTranscriptRecord[] {
-    return platformStore.getState().transcripts.filter((t) => t.userUid === userUid);
+    const all = platformStore.getState().transcripts.filter((t) => t.userUid === userUid);
+    // Keep only the single latest transcript per category (1 assignment transcript per agent type)
+    const byCategory = new Map<string, AssessmentTranscriptRecord>();
+    for (const tr of all) {
+      const existing = byCategory.get(tr.category);
+      if (
+        !existing ||
+        String(tr.submittedAt || tr.createdAt || '') > String(existing.submittedAt || existing.createdAt || '')
+      ) {
+        byCategory.set(tr.category, tr);
+      }
+    }
+    return Array.from(byCategory.values());
   }
 
   private async readCvTextSnippet(cvFileName?: string): Promise<string> {
